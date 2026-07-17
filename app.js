@@ -271,8 +271,9 @@ async function analyzeVideos() {
   container.innerHTML = '<div class="loading">正在分析视频...</div>';
   compareArea.innerHTML = '';
   
-  for (const v of state.videos) {
-    container.innerHTML = `<div class="loading">正在提取 ${v.name} 的帧...</div>`;
+  for (let i = 0; i < state.videos.length; i++) {
+    const v = state.videos[i];
+    container.innerHTML = `<div class="loading">正在提取 ${v.name} 的帧 (${i+1}/${state.videos.length})...</div>`;
     await extractFrames(v.id);
   }
   
@@ -319,21 +320,24 @@ async function extractFrames(videoId) {
   state.frames[videoId] = frames;
 }
 
-// ===== 在指定时间范围内密集提取帧（用于精细搜索）=====
+// ===== 在指定时间范围内密集提取帧（复用已有video元素）=====
 async function extractFramesInRange(videoId, startTime, endTime, step) {
   const v = state.videos.find(v => v.id === videoId);
   const region = state.regions[videoId];
   
   if (!v || !region) return [];
   
-  const video = document.createElement('video');
-  video.src = v.url;
-  video.muted = true;
-  
-  await new Promise(resolve => {
-    video.addEventListener('loadedmetadata', resolve);
-    video.load();
-  });
+  // 复用已有的video元素（如果有）
+  let video = document.getElementById(`video-${videoId}`);
+  if (!video) {
+    video = document.createElement('video');
+    video.src = v.url;
+    video.muted = true;
+    await new Promise(resolve => {
+      video.addEventListener('loadedmetadata', resolve);
+      video.load();
+    });
+  }
   
   const duration = video.duration;
   const frames = [];
@@ -350,7 +354,6 @@ async function extractFramesInRange(videoId, startTime, endTime, step) {
     frames.push({ time, signature });
   }
   
-  video.src = '';
   return frames;
 }
 
@@ -397,12 +400,6 @@ async function calculateBestOffset() {
   const base = videos[0];
   const baseFrames = state.frames[base.id];
   
-  // 为每个视频建立排序的时间数组用于二分查找
-  const sortedFrames = {};
-  for (const v of videos) {
-    sortedFrames[v.id] = state.frames[v.id].slice().sort((a, b) => a.time - b.time);
-  }
-  
   // 在排序帧列表中找最接近 targetTime 的签名
   function findClosest(frameList, targetTime) {
     let lo = 0, hi = frameList.length - 1;
@@ -438,19 +435,25 @@ async function calculateBestOffset() {
   let bestCoarseOffset = 0;
   let bestCoarseScore = Infinity;
   
+  // 粗搜：用base的3帧，和每个target的3帧比较
   for (let offset = -30; offset <= 30; offset = Math.round((offset + 0.1) * 100) / 100) {
-    const s = scoreAtOffset(offset, baseFrames, baseFrames);
-    if (s < bestCoarseScore) { bestCoarseScore = s; bestCoarseOffset = offset; }
+    let totalScore = 0;
+    for (let i = 1; i < videos.length; i++) {
+      totalScore += scoreAtOffset(offset, baseFrames, state.frames[videos[i].id]);
+    }
+    const avgScore = totalScore / (videos.length - 1);
+    if (avgScore < bestCoarseScore) { bestCoarseScore = avgScore; bestCoarseOffset = offset; }
   }
   
   container.innerHTML = `<div class="loading">粗略结果: ${bestCoarseOffset.toFixed(2)}s，正在精细搜索...</div>`;
   
   // ===== 第二阶段：在粗偏移附近密集提取帧做精搜 =====
-  const searchStart = Math.max(0, bestCoarseOffset - 0.2);
-  const searchEnd = bestCoarseOffset + 0.2;
-  const fineStep = 0.01; // 0.01秒步长
+  const searchMargin = 0.2;
+  const searchStart = Math.max(0, bestCoarseOffset - searchMargin);
+  const searchEnd = bestCoarseOffset + searchMargin;
+  const fineStep = 0.02; // 0.02秒步长，提取约20帧
   
-  // 为base和target视频在局部范围内密集提取帧
+  // 提取base在局部范围的密集帧
   const baseFineFrames = await extractFramesInRange(base.id, searchStart, searchEnd, fineStep);
   
   let bestFineOffset = bestCoarseOffset;
