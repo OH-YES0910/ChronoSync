@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChronoSync</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1>ChronoSync</h1>
+      <p class="subtitle">自动帧提取 · 自动对齐 · 同帧对比</p>
+    </header>
+
+    <!-- 步骤1: 上传视频 -->
+    <section class="step" id="step1">
+      <div class="step-header">
+        <span class="step-number">1</span>
+        <h2>上传视频</h2>
+      </div>
+      
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="fileInput" accept="video/*" multiple hidden>
+        <div class="upload-placeholder">
+          <span class="upload-icon">📁</span>
+          <p>拖放视频文件到此处，或点击选择</p>
+          <p class="upload-hint">支持 MP4, WebM, MOV 等格式 · 可选择多个视频</p>
+        </div>
+      </div>
+      
+      <div class="video-list" id="videoList"></div>
+      
+      <button class="btn btn-primary" id="nextBtn1" disabled onclick="goToStep(2)">
+        下一步：框选计时器
+      </button>
+    </section>
+
+    <!-- 步骤2: 框选计时器区域 -->
+    <section class="step hidden" id="step2">
+      <div class="step-header">
+        <span class="step-number">2</span>
+        <h2>框选计时器区域</h2>
+      </div>
+      
+      <p class="hint">在每个视频画面上拖拽框选计时器区域。注意避开上方的速度表，只框选计时器数字部分（右上角红/土黄色背景+白色数字）</p>
+      
+      <div class="region-panels" id="regionPanels"></div>
+      
+      <button class="btn btn-primary" id="nextBtn2" disabled onclick="goToStep(3)">
+        开始分析
+      </button>
+    </section>
+
+    <!-- 步骤3: 分析+对比 -->
+    <section class="step hidden" id="step3">
+      <div class="step-header">
+        <span class="step-number">3</span>
+        <h2>同步对比</h2>
+      </div>
+      
+      <div id="analysisResult"></div>
+      
+      <div id="comparisonArea"></div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/util.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
