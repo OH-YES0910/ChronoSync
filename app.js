@@ -303,11 +303,11 @@ async function extractFrames(videoId) {
   v.duration = video.duration;
   
   const duration = video.duration;
-  const frameCount = Math.min(300, Math.max(60, Math.floor(duration / 0.05))); // 每0.05秒采一帧
+  const frameCount = Math.min(600, Math.max(60, Math.floor(duration / 0.01))); // 每0.01秒采一帧
   const frames = [];
   
   for (let i = 0; i < frameCount; i++) {
-    const time = Math.min(duration - 0.05, duration * (0.02 + 0.96 * i / (frameCount - 1)));
+    const time = Math.min(duration - 0.01, duration * (0.02 + 0.96 * i / (frameCount - 1)));
     
     video.currentTime = time;
     await new Promise(resolve => {
