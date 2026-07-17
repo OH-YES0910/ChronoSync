@@ -276,15 +276,14 @@ async function analyzeVideos() {
     await extractFrames(v.id);
   }
   
-  container.innerHTML = '<div class="loading">正在计算最佳偏移...</div>';
-  calculateBestOffset();
+  await calculateBestOffset();
   
-  container.innerHTML = `<div class="done">分析完成！最佳偏移: ${state.bestOffset.toFixed(2)}秒</div>`;
+  container.innerHTML = `<div class="done">分析完成！最佳偏移: ${state.bestOffset.toFixed(3)}秒</div>`;
   
   initSync();
 }
 
-// ===== 提取帧（30帧均匀采样）=====
+// ===== 提取帧（稀疏采样：3帧用于粗匹配）=====
 async function extractFrames(videoId) {
   const v = state.videos.find(v => v.id === videoId);
   const region = state.regions[videoId];
@@ -303,12 +302,11 @@ async function extractFrames(videoId) {
   v.duration = video.duration;
   
   const duration = video.duration;
-  const frameCount = Math.min(600, Math.max(60, Math.floor(duration / 0.01))); // 每0.01秒采一帧
+  // 稀疏采样：在第5秒、第15秒、第25秒取3帧（避开开头倒计时）
+  const sampleTimes = [5, 15, 25].filter(t => t < duration - 1).map(t => Math.min(t, duration - 0.5));
   const frames = [];
   
-  for (let i = 0; i < frameCount; i++) {
-    const time = Math.min(duration - 0.01, duration * (0.02 + 0.96 * i / (frameCount - 1)));
-    
+  for (const time of sampleTimes) {
     video.currentTime = time;
     await new Promise(resolve => {
       video.addEventListener('seeked', resolve, { once: true });
@@ -319,6 +317,41 @@ async function extractFrames(videoId) {
   }
   
   state.frames[videoId] = frames;
+}
+
+// ===== 在指定时间范围内密集提取帧（用于精细搜索）=====
+async function extractFramesInRange(videoId, startTime, endTime, step) {
+  const v = state.videos.find(v => v.id === videoId);
+  const region = state.regions[videoId];
+  
+  if (!v || !region) return [];
+  
+  const video = document.createElement('video');
+  video.src = v.url;
+  video.muted = true;
+  
+  await new Promise(resolve => {
+    video.addEventListener('loadedmetadata', resolve);
+    video.load();
+  });
+  
+  const duration = video.duration;
+  const frames = [];
+  
+  for (let time = startTime; time <= endTime; time = Math.round((time + step) * 100) / 100) {
+    if (time < 0 || time >= duration - 0.1) continue;
+    
+    video.currentTime = time;
+    await new Promise(resolve => {
+      video.addEventListener('seeked', resolve, { once: true });
+    });
+    
+    const signature = extractTimerSignature(video, region);
+    frames.push({ time, signature });
+  }
+  
+  video.src = '';
+  return frames;
 }
 
 // ===== 提取计时器特征签名（白色像素垂直投影）=====
@@ -356,8 +389,8 @@ function extractTimerSignature(video, region) {
   return projection;
 }
 
-// ===== 计算最佳偏移（两阶段搜索 + 余弦距离）=====
-function calculateBestOffset() {
+// ===== 计算最佳偏移（两阶段：3帧粗搜 + 局部密集帧精搜）=====
+async function calculateBestOffset() {
   const videos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
   if (videos.length < 2) return;
   
@@ -371,26 +404,26 @@ function calculateBestOffset() {
   }
   
   // 在排序帧列表中找最接近 targetTime 的签名
-  function findClosest(videoId, targetTime) {
-    const frames = sortedFrames[videoId];
-    let lo = 0, hi = frames.length - 1;
+  function findClosest(frameList, targetTime) {
+    let lo = 0, hi = frameList.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (frames[mid].time < targetTime) lo = mid + 1;
+      if (frameList[mid].time < targetTime) lo = mid + 1;
       else hi = mid;
     }
-    if (lo > 0 && Math.abs(frames[lo - 1].time - targetTime) < Math.abs(frames[lo].time - targetTime)) {
-      return frames[lo - 1];
+    if (lo > 0 && Math.abs(frameList[lo - 1].time - targetTime) < Math.abs(frameList[lo].time - targetTime)) {
+      return frameList[lo - 1];
     }
-    return frames[lo];
+    return frameList[lo];
   }
   
-  function scoreAtOffset(offset) {
+  // 用给定帧列表计算某个偏移的得分
+  function scoreAtOffset(offset, baseFrameList, targetFrameList) {
     let total = 0, count = 0;
-    for (const bf of baseFrames) {
-      for (let i = 1; i < videos.length; i++) {
-        const targetTime = bf.time + offset;
-        const closest = findClosest(videos[i].id, targetTime);
+    for (const bf of baseFrameList) {
+      const targetTime = bf.time + offset;
+      const closest = findClosest(targetFrameList, targetTime);
+      if (closest) {
         total += cosineDistance(bf.signature, closest.signature);
         count++;
       }
@@ -398,23 +431,47 @@ function calculateBestOffset() {
     return count > 0 ? total / count : Infinity;
   }
   
-  // 第一阶段：粗搜 0.05s 步长 [-30, +30]
-  let bestOffset = 0;
-  let bestScore = Infinity;
-  for (let offset = -30; offset <= 30; offset = Math.round((offset + 0.05) * 100) / 100) {
-    const s = scoreAtOffset(offset);
-    if (s < bestScore) { bestScore = s; bestOffset = offset; }
+  // ===== 第一阶段：用3帧稀疏采样做粗搜 =====
+  const container = document.getElementById('analysisResult');
+  container.innerHTML = '<div class="loading">第一阶段：粗略搜索（3帧）...</div>';
+  
+  let bestCoarseOffset = 0;
+  let bestCoarseScore = Infinity;
+  
+  for (let offset = -30; offset <= 30; offset = Math.round((offset + 0.1) * 100) / 100) {
+    const s = scoreAtOffset(offset, baseFrames, baseFrames);
+    if (s < bestCoarseScore) { bestCoarseScore = s; bestCoarseOffset = offset; }
   }
   
-  // 第二阶段：精搜 ±0.05s 范围内 0.001s 步长
-  const fineStart = Math.round((bestOffset - 0.05) * 1000) / 1000;
-  const fineEnd = Math.round((bestOffset + 0.05) * 1000) / 1000;
-  for (let offset = fineStart; offset <= fineEnd; offset = Math.round((offset + 0.001) * 1000) / 1000) {
-    const s = scoreAtOffset(offset);
-    if (s < bestScore) { bestScore = s; bestOffset = offset; }
+  container.innerHTML = `<div class="loading">粗略结果: ${bestCoarseOffset.toFixed(2)}s，正在精细搜索...</div>`;
+  
+  // ===== 第二阶段：在粗偏移附近密集提取帧做精搜 =====
+  const searchStart = Math.max(0, bestCoarseOffset - 0.2);
+  const searchEnd = bestCoarseOffset + 0.2;
+  const fineStep = 0.01; // 0.01秒步长
+  
+  // 为base和target视频在局部范围内密集提取帧
+  const baseFineFrames = await extractFramesInRange(base.id, searchStart, searchEnd, fineStep);
+  
+  let bestFineOffset = bestCoarseOffset;
+  let bestFineScore = Infinity;
+  
+  // 为每个非base视频提取局部密集帧并搜索
+  for (let i = 1; i < videos.length; i++) {
+    const target = videos[i];
+    const targetFineFrames = await extractFramesInRange(target.id, searchStart, searchEnd, fineStep);
+    
+    // 在粗偏移附近±0.05s范围内，以0.001s步长精细搜索
+    const fineSearchStart = Math.round((bestCoarseOffset - 0.05) * 1000) / 1000;
+    const fineSearchEnd = Math.round((bestCoarseOffset + 0.05) * 1000) / 1000;
+    
+    for (let offset = fineSearchStart; offset <= fineSearchEnd; offset = Math.round((offset + 0.001) * 1000) / 1000) {
+      const s = scoreAtOffset(offset, baseFineFrames, targetFineFrames);
+      if (s < bestFineScore) { bestFineScore = s; bestFineOffset = offset; }
+    }
   }
   
-  state.bestOffset = bestOffset;
+  state.bestOffset = bestFineOffset;
 }
 
 // ===== 余弦距离 =====
