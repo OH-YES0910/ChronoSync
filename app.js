@@ -243,7 +243,7 @@ function randomSeek(videoId) {
   slider.value = (time / video.duration) * 100;
 }
 
-// ===== 自动区域（避开速度表） =====
+// ===== 自动区域（参考FrameSync：右上角 82%×8%） =====
 function autoRegion(videoId) {
   const selector = document.getElementById(`selector-${videoId}`);
   const box = document.getElementById(`box-${videoId}`);
@@ -251,15 +251,16 @@ function autoRegion(videoId) {
   
   const rect = selector.getBoundingClientRect();
   
-  state.regions[videoId] = { x: 78, y: 8, w: 18, h: 14 };
+  // 参考FrameSync：右上角82%×8%，不框中文
+  state.regions[videoId] = { x: 82, y: 8, w: 16, h: 8 };
   
-  box.style.left = (rect.width * 0.78) + 'px';
+  box.style.left = (rect.width * 0.82) + 'px';
   box.style.top = (rect.height * 0.08) + 'px';
-  box.style.width = (rect.width * 0.18) + 'px';
-  box.style.height = (rect.height * 0.14) + 'px';
+  box.style.width = (rect.width * 0.16) + 'px';
+  box.style.height = (rect.height * 0.08) + 'px';
   box.classList.add('active');
   
-  display.textContent = 'x=78% y=8% w=18% h=14% (已避开速度表)';
+  display.textContent = 'x=82% y=8% w=16% h=8% (计时器区域)';
   display.style.color = 'var(--success)';
   updateButtons();
 }
@@ -778,35 +779,59 @@ function parseTimerText(text) {
   return null;
 }
 
-// 用OCR读取单帧的计时器值（参考FrameSync: 160x36 裸 canvas，不做预处理）
-// 自动扩展ROI：用户框选可能偏小，OCR时扩大范围确保捕获完整计时器
+// ===== Tesseract Worker（参考FrameSync：创建一次，复用）=====
+const OCR = {
+  worker: null,
+  ready: false,
+};
+
+async function ocrInit() {
+  if (OCR.ready) return true;
+  try {
+    if (typeof Tesseract === 'undefined') {
+      console.warn('[OCR] Tesseract.js 未加载');
+      return false;
+    }
+    OCR.worker = await Tesseract.createWorker('eng', 1, {
+      logger: m => { if (m.status === 'loading tesseract core') console.log('[OCR] 加载内核…'); }
+    });
+    await OCR.worker.setParameters({
+      tessedit_char_whitelist: '0123456789.:',  // 只识别数字和分隔符
+      tessedit_pageseg_mode: '8',  // PSM_SINGLE_WORD — 适合 MM:SS.mmm 格式
+    });
+    OCR.ready = true;
+    console.log('[OCR] Tesseract 就绪');
+    return true;
+  } catch (e) {
+    console.error('[OCR] 初始化失败:', e);
+    return false;
+  }
+}
+
+// ===== OCR读取单帧计时器值（参考FrameSync：640x144 裸 canvas，不做预处理）=====
 async function readTimerValue(video, region) {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   
-  // 自动扩展ROI（FrameSync默认 w=16%, h=14%，用户的可能偏小）
-  const expandX = 3; // 向左扩展3%
-  const expandY = 4; // 向上扩展4%
-  const expandW = 6; // 宽度扩展6%
-  const expandH = 8; // 高度扩展8%
+  // 参考FrameSync：不做ROI扩展，直接用用户选区
+  const rx = region.x / 100 * vw;
+  const ry = region.y / 100 * vh;
+  const rw = region.w / 100 * vw;
+  const rh = region.h / 100 * vh;
   
-  const rx = Math.max(0, region.x - expandX) / 100 * vw;
-  const ry = Math.max(0, region.y - expandY) / 100 * vh;
-  const rw = Math.min(100, region.x + region.w + expandW) / 100 * vw - rx;
-  const rh = Math.min(100, region.y + region.h + expandH) / 100 * vh - ry;
-  
-  // FrameSync的方式：固定160x36 canvas，不做任何预处理
+  // 参考FrameSync：640x144 画布，不做预处理
   const canvas = document.createElement('canvas');
-  canvas.width = 160;
-  canvas.height = 36;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(video, rx, ry, rw, rh, 0, 0, 160, 36);
+  canvas.width = 640;
+  canvas.height = 144;
+  canvas.getContext('2d').drawImage(video, rx, ry, rw, rh, 0, 0, 640, 144);
   
+  // 参考FrameSync：直接用 worker.recognize
   try {
-    const { data } = await Tesseract.recognize(canvas, 'eng');
-    const text = data.text.trim();
+    const { data } = await OCR.worker.recognize(canvas);
+    const text = (data.text || '').trim();
+    const confidence = (data.confidence || 0) / 100;
     const value = parseTimerText(text);
-    console.log('[OCR]', { text, value, confidence: data.confidence, roi: `expanded from ${region.w.toFixed(1)}x${region.h.toFixed(1)}%` });
+    console.log('[OCR]', { text, value, confidence: (confidence*100).toFixed(0) + '%' });
     return { text, value, confidence: data.confidence };
   } catch (e) {
     console.error('[OCR Error]', e);
@@ -845,12 +870,19 @@ function theilSenRegression(points) {
   return { slope: medianSlope, intercept: medianIntercept };
 }
 
-// ===== 核心算法：提取帧并OCR读取计时器（参考FrameSync）=====
+// ===== 核心算法：提取帧并OCR读取计时器（完全参考FrameSync）=====
 async function extractFrames(videoId) {
   const v = state.videos.find(v => v.id === videoId);
   const region = state.regions[videoId];
   
   if (!v || !region) return;
+  
+  // 参考FrameSync：先初始化OCR Worker
+  const ok = await ocrInit();
+  if (!ok) {
+    console.error('[extractFrames] OCR初始化失败');
+    return;
+  }
   
   console.log('[extractFrames] Starting for', v.name, 'region:', region);
   
@@ -872,10 +904,10 @@ async function extractFrames(videoId) {
   console.log('[extractFrames] Video loaded:', v.name, `${video.videoWidth}x${video.videoHeight}`, `duration=${video.duration}s`);
   
   const duration = video.duration;
-  const usableStart = duration * 0.08;
+  const usableStart = duration * 0.05;  // 参考FrameSync：5%~95%
   const usableEnd = duration * 0.95;
   
-  // 采样5帧用于OCR校准
+  // 参考FrameSync：采样5帧
   const sampleCount = 5;
   const calibPoints = [];
   const usedTimes = new Set();
@@ -883,9 +915,9 @@ async function extractFrames(videoId) {
   const container = document.getElementById('analysisResult');
   
   for (let i = 0; i < sampleCount; i++) {
-    // 随机采样（参考FrameSync的autoSample）
+    // 随机采样
     let time;
-    for (let attempt = 0; attempt < 50; attempt++) {
+    for (let attempt = 0; attempt < 200; attempt++) {  // 参考FrameSync：200次尝试
       const t = usableStart + Math.random() * (usableEnd - usableStart);
       const key = Math.round(t * 1000);
       if (!usedTimes.has(key)) {
@@ -896,18 +928,42 @@ async function extractFrames(videoId) {
     }
     if (time === undefined) time = usableStart + (usableEnd - usableStart) * i / (sampleCount - 1);
     
+    // 参考FrameSync：先暂停，再seek
+    video.pause();
     video.currentTime = time;
-    await new Promise(resolve => {
-      video.addEventListener('seeked', resolve, { once: true });
-    });
     
-    const result = await readTimerValue(video, region);
+    // 参考FrameSync：等待seeked + 2次requestAnimationFrame确保渲染
+    await new Promise(resolve => {
+      const to = setTimeout(resolve, 2000);
+      const onSeeked = () => { clearTimeout(to); resolve(); };
+      video.addEventListener('seeked', onSeeked, { once: true });
+    });
+    await new Promise(r => requestAnimationFrame(r));
+    await new Promise(r => requestAnimationFrame(r));
+    
+    // 参考FrameSync：先尝试当前帧
+    let result = await readTimerValue(video, region);
+    
+    // 参考FrameSync：如果失败，重试 time + 0.05s
+    if (result.value === null) {
+      const retryTime = Math.min(time + 0.05, duration - 0.01);
+      video.currentTime = retryTime;
+      await new Promise(resolve => {
+        const to = setTimeout(resolve, 2000);
+        const onSeeked = () => { clearTimeout(to); resolve(); };
+        video.addEventListener('seeked', onSeeked, { once: true });
+      });
+      await new Promise(r => requestAnimationFrame(r));
+      await new Promise(r => requestAnimationFrame(r));
+      const retry = await readTimerValue(video, region);
+      if (retry.value !== null) result = retry;
+    }
     
     // 更新进度条
     const percent = ((i + 1) / sampleCount) * 80;
     setProgress(container, percent, `正在OCR识别 ${v.name} 帧 ${i+1}/${sampleCount}`);
     
-    console.log(`[extractFrames] Frame ${i+1}: time=${time.toFixed(2)}s, text="${result.text}", value=${result.value}, confidence=${result.confidence}`);
+    console.log(`[extractFrames] Frame ${i+1}: time=${time.toFixed(2)}s, text="${result.text}", value=${result.value}`);
     
     if (result.value !== null) {
       calibPoints.push({ videoTime: time, timerValue: result.value });
