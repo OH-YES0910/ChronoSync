@@ -296,7 +296,13 @@ async function analyzeVideos() {
   setProgress(container, (currentStep / totalSteps) * 100, '正在计算偏移...');
   await calculateBestOffset();
   
-  container.innerHTML = `<div class="done">分析完成！最佳偏移: ${state.bestOffset.toFixed(3)}秒</div>`;
+  // 构建各视频偏移显示
+  const offsetSummary = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2)
+    .map((v, i) => {
+      const offset = state.offsets[v.id] || 0;
+      return i === 0 ? `${v.name.replace(/\.[^.]+$/, '')}: 基准` : `${v.name.replace(/\.[^.]+$/, '')}: +${offset.toFixed(3)}s`;
+    }).join(' | ');
+  container.innerHTML = `<div class="done">分析完成！${offsetSummary}</div>`;
   
   initSync();
 }
@@ -449,65 +455,36 @@ function startSyncPlay() {
   
   // 等待所有视频开始播放后再启动同步循环
   Promise.all(playPromises).then(() => {
-    // 重置所有视频的播放速率
-    state.videos.forEach(v => {
-      const video = document.getElementById(`syncvideo-${v.id}`);
-      if (video) video.playbackRate = 1.0;
-    });
-    
     const baseVideo = document.getElementById(`syncvideo-${state.videos[0].id}`);
-    let frameCount = 0;
-    let lastSyncTime = 0;
+    let lastDisplayTime = -1;
     
     function syncLoop() {
       if (!state.isPlaying) return;
       
       if (baseVideo && !baseVideo.paused) {
-        const currentTime = baseVideo.currentTime;
-        frameCount++;
+        const baseTime = baseVideo.currentTime;
         
-        // 每10帧更新一次UI
-        if (frameCount % 10 === 0) {
-          slider.value = currentTime;
-          document.getElementById('timeDisplay').textContent = currentTime.toFixed(1) + 's';
+        // 每次循环都对齐所有视频（和拖动滑块完全一样的逻辑）
+        state.videos.forEach(v => {
+          if (v.id === state.videos[0].id) return;
+          const video = document.getElementById(`syncvideo-${v.id}`);
+          if (!video) return;
+          const offset = state.offsets[v.id] || 0;
+          const targetTime = Math.max(0, baseTime + offset);
+          // 只有偏移超过0.05秒才seek，避免频繁微调导致卡顿
+          if (Math.abs(video.currentTime - targetTime) > 0.05) {
+            video.currentTime = targetTime;
+          }
+        });
+        
+        // 更新UI显示
+        if (Math.abs(baseTime - lastDisplayTime) >= 0.1) {
+          lastDisplayTime = baseTime;
+          slider.value = baseTime;
+          document.getElementById('timeDisplay').textContent = baseTime.toFixed(1) + 's';
         }
         
-        // 每秒同步一次（用时间间隔判断，不用帧数）
-        if (currentTime - lastSyncTime >= 1.0) {
-          lastSyncTime = currentTime;
-          
-          state.videos.forEach(v => {
-            if (v.id === state.videos[0].id) return;
-            const video = document.getElementById(`syncvideo-${v.id}`);
-            if (video && !video.paused) {
-              const offset = state.offsets[v.id] || 0;
-              const targetTime = currentTime + offset;
-              const drift = video.currentTime - targetTime;
-              const absDrift = Math.abs(drift);
-              
-              if (absDrift > 5.0) {
-                // 极大偏移才seek，暂停+seek+恢复
-                const wasPlaying = !video.paused;
-                video.pause();
-                video.currentTime = targetTime;
-                video.addEventListener('seeked', () => {
-                  if (wasPlaying && state.isPlaying) video.play();
-                }, { once: true });
-              } else if (absDrift > 0.5) {
-                // 中等偏移用极温和的playbackRate微调（±3%）
-                const correction = 1.0 - drift * 0.05;
-                video.playbackRate = Math.max(0.97, Math.min(1.03, correction));
-              } else {
-                // 小偏移或无偏移恢复1.0
-                if (Math.abs(video.playbackRate - 1.0) > 0.001) {
-                  video.playbackRate = 1.0;
-                }
-              }
-            }
-          });
-        }
-        
-        if (currentTime >= maxTime) {
+        if (baseTime >= maxTime) {
           pauseSyncPlay();
           return;
         }
