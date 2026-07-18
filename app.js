@@ -813,17 +813,44 @@ async function readTimerValue(video, region) {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   
-  // 参考FrameSync：不做ROI扩展，直接用用户选区
-  const rx = region.x / 100 * vw;
-  const ry = region.y / 100 * vh;
-  const rw = region.w / 100 * vw;
-  const rh = region.h / 100 * vh;
+  // 计算 object-fit: contain 在 16:9 selector 中的实际映射
+  // selector 是 16:9，视频可能不是，contain 会居中显示
+  const SELECTOR_ASPECT = 16/9;
+  const videoAspect = vw / vh;
+  
+  let scaleX, scaleY, offsetX, offsetY;
+  if (videoAspect > SELECTOR_ASPECT) {
+    // 视频更宽：填满宽度，上下居中
+    scaleX = 1;
+    scaleY = SELECTOR_ASPECT / videoAspect;
+    offsetX = 0;
+    offsetY = (1 - scaleY) / 2;
+  } else {
+    // 视频更窄（如 Asphalt 9 的 3200×2136）：填满高度，左右居中
+    scaleY = 1;
+    scaleX = videoAspect / SELECTOR_ASPECT;
+    offsetX = (1 - scaleX) / 2;
+    offsetY = 0;
+  }
+  
+  // 将 selector 百分比坐标映射到视频实际像素坐标
+  const videoX = (region.x / 100 - offsetX) / scaleX * vw;
+  const videoY = (region.y / 100 - offsetY) / scaleY * vh;
+  const videoW = (region.w / 100) / scaleX * vw;
+  const videoH = (region.h / 100) / scaleY * vh;
+  
+  // 裁剪到有效范围
+  const rx = Math.max(0, Math.min(videoX, vw));
+  const ry = Math.max(0, Math.min(videoY, vh));
+  const rw = Math.max(1, Math.min(videoW, vw - rx));
+  const rh = Math.max(1, Math.min(videoH, vh - ry));
   
   // 参考FrameSync：640x144 画布，不做预处理
   const canvas = document.createElement('canvas');
   canvas.width = 640;
   canvas.height = 144;
-  canvas.getContext('2d').drawImage(video, rx, ry, rw, rh, 0, 0, 640, 144);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, rx, ry, rw, rh, 0, 0, 640, 144);
   
   // 参考FrameSync：直接用 worker.recognize
   try {
@@ -832,6 +859,7 @@ async function readTimerValue(video, region) {
     const confidence = (data.confidence || 0) / 100;
     const value = parseTimerText(text);
     console.log('[OCR]', { text, value, confidence: (confidence*100).toFixed(0) + '%' });
+    console.log('[OCR] Canvas ROI:', { rx: Math.round(rx), ry: Math.round(ry), rw: Math.round(rw), rh: Math.round(rh), vw, vh });
     return { text, value, confidence: data.confidence };
   } catch (e) {
     console.error('[OCR Error]', e);
@@ -839,19 +867,20 @@ async function readTimerValue(video, region) {
   }
 }
 
-// Theil-Sen 稳健回归：计算中位数斜率
-// 返回 { slope, intercept } 使得 timerValue ≈ slope * videoTime + intercept
+// Theil-Sen 稳健回归（参考FrameSync：videoTime = slope × timerValue + intercept）
+// 注意：回归方向是从计时器值 → 视频时间，不是反向
+// 用于给定计时器值 T，计算对应视频时间：videoTime = slope * T + intercept
 function theilSenRegression(points) {
   if (points.length < 2) return null;
   
-  // 计算所有点对的斜率
+  // 计算所有点对的斜率：ΔvideoTime / ΔtimerValue
   const slopes = [];
   for (let i = 0; i < points.length; i++) {
     for (let j = i + 1; j < points.length; j++) {
-      const dx = points[j].videoTime - points[i].videoTime;
-      if (Math.abs(dx) > 0.001) { // 避免除零
-        const dy = points[j].timerValue - points[i].timerValue;
-        slopes.push(dy / dx);
+      const dt = points[j].timerValue - points[i].timerValue;
+      if (Math.abs(dt) > 0.001) { // 避免除零
+        const dv = points[j].videoTime - points[i].videoTime;
+        slopes.push(dv / dt);
       }
     }
   }
@@ -862,8 +891,8 @@ function theilSenRegression(points) {
   slopes.sort((a, b) => a - b);
   const medianSlope = slopes[Math.floor(slopes.length / 2)];
   
-  // 用中位数斜率计算截距的中位数
-  const intercepts = points.map(p => p.timerValue - medianSlope * p.videoTime);
+  // 截距中位数：intercept = videoTime - slope × timerValue
+  const intercepts = points.map(p => p.videoTime - medianSlope * p.timerValue);
   intercepts.sort((a, b) => a - b);
   const medianIntercept = intercepts[Math.floor(intercepts.length / 2)];
   
@@ -1009,7 +1038,7 @@ async function calculateBestOffset() {
     
     // 离群值过滤：移除残差 > 2秒的点
     if (points.length > 3) {
-      const residuals = points.map(p => Math.abs(p.timerValue - (reg.slope * p.videoTime + reg.intercept)));
+      const residuals = points.map(p => Math.abs(p.videoTime - (reg.slope * p.timerValue + reg.intercept)));
       const median = residuals.slice().sort((a, b) => a - b)[Math.floor(residuals.length / 2)];
       const threshold = Math.max(2.0, median * 3); // 至少2秒或3倍中位数
       const filtered = points.filter((p, idx) => residuals[idx] < threshold);
