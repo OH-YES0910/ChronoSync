@@ -311,22 +311,26 @@ async function analyzeVideos() {
 function initSync() {
   const container = document.getElementById('comparisonArea');
   
-  const validVideos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
-  if (validVideos.length < 2) {
+  if (state.videos.length < 2) {
     container.innerHTML = '<div class="no-match">没有足够的数据</div>';
     return;
   }
   
+  // 使用所有视频，不再过滤
+  const allVideos = state.videos;
+  
   let maxTime = -Infinity;
-  for (const v of validVideos) {
+  for (const v of allVideos) {
     if (v.duration > maxTime) maxTime = v.duration;
   }
   
-  // 构建每个视频的偏移显示信息（不再用 bestOffset 单值）
-  const offsetInfo = validVideos.map((v, i) => {
+  // 构建每个视频的偏移显示信息
+  const offsetInfo = allVideos.map((v, i) => {
     const offset = state.offsets[v.id] || 0;
+    const hasOCR = state.frames[v.id] && state.frames[v.id].length > 0;
     const label = i === 0 ? '基准' : `+${offset.toFixed(3)}s`;
-    return `<span class="offset-tag ${i === 0 ? 'base' : ''}">${v.name.replace(/\.[^.]+$/, '')}: ${label}</span>`;
+    const ocrBadge = hasOCR ? '' : ' ⚠️未识别';
+    return `<span class="offset-tag ${i === 0 ? 'base' : ''}">${v.name.replace(/\.[^.]+$/, '')}: ${label}${ocrBadge}</span>`;
   }).join(' ');
   
   container.innerHTML = `
@@ -345,7 +349,7 @@ function initSync() {
     </div>
     
     <div class="sync-videos">
-      ${validVideos.map((v, i) => `
+      ${allVideos.map((v, i) => `
         <div class="sync-video">
           <h3>${v.name}</h3>
           <video id="syncvideo-${v.id}" muted playsinline></video>
@@ -389,12 +393,20 @@ function initSync() {
     </div>
   `;
   
-  // 加载视频，保留各自已计算的 offset（不再覆盖）
-  validVideos.forEach((v, i) => {
-    const video = document.getElementById(`syncvideo-${v.id}`);
-    video.src = v.url;
-    video.load();
-    // 不再覆盖 state.offsets — calculateBestOffset 已经为每个视频独立计算
+  // 加载所有视频并等待 ready
+  const loadPromises = allVideos.map((v) => {
+    return new Promise(resolve => {
+      const video = document.getElementById(`syncvideo-${v.id}`);
+      video.src = v.url;
+      video.onloadeddata = () => resolve();
+      video.onerror = () => resolve(); // 加载失败也不阻塞
+      video.load();
+    });
+  });
+  
+  Promise.all(loadPromises).then(() => {
+    // 全部加载完毕后再设置初始时间
+    updateSyncFromSlider();
   });
   
   const slider = document.getElementById('timeSlider');
@@ -413,14 +425,12 @@ function updateSyncFromSlider() {
   
   document.getElementById('timeDisplay').textContent = time.toFixed(1) + 's';
   
-  const firstVideo = document.getElementById(`syncvideo-${state.videos[0].id}`);
-  if (firstVideo) firstVideo.currentTime = time;
-  
-  state.videos.forEach(v => {
-    if (v.id === state.videos[0].id) return;
+  // 同步所有视频
+  state.videos.forEach((v, i) => {
     const video = document.getElementById(`syncvideo-${v.id}`);
+    if (!video) return;
     const offset = state.offsets[v.id] || 0;
-    if (video) video.currentTime = Math.max(0, time + offset);
+    video.currentTime = Math.max(0, time + (i === 0 ? 0 : offset));
   });
 }
 
@@ -443,39 +453,54 @@ function startSyncPlay() {
   // 先设置所有视频到正确位置
   updateSyncFromSlider();
   
-  // 同时开始播放所有视频
-  const playPromises = [];
-  state.videos.forEach(v => {
-    const video = document.getElementById(`syncvideo-${v.id}`);
-    if (video) {
-      video.playbackRate = 1.0;
-      playPromises.push(video.play().catch(() => {}));
-    }
+  // 等所有视频 ready 后再统一播放
+  const readyPromises = state.videos.map(v => {
+    return new Promise(resolve => {
+      const video = document.getElementById(`syncvideo-${v.id}`);
+      if (!video) { resolve(); return; }
+      if (video.readyState >= 3) { resolve(); return; } // HAVE_FUTURE_DATA
+      video.oncanplay = () => resolve();
+      video.onerror = () => resolve();
+      setTimeout(resolve, 3000); // 3秒超时
+    });
   });
   
-  // 等待所有视频开始播放后再启动同步循环
-  Promise.all(playPromises).then(() => {
+  Promise.all(readyPromises).then(() => {
+    // 同时开始播放所有视频
+    state.videos.forEach(v => {
+      const video = document.getElementById(`syncvideo-${v.id}`);
+      if (video) {
+        video.playbackRate = 1.0;
+        video.play().catch(() => {});
+      }
+    });
+    
     const baseVideo = document.getElementById(`syncvideo-${state.videos[0].id}`);
     let lastDisplayTime = -1;
+    let lastCheckTime = 0;
     
-    function syncLoop() {
+    function syncLoop(timestamp) {
       if (!state.isPlaying) return;
       
       if (baseVideo && !baseVideo.paused) {
         const baseTime = baseVideo.currentTime;
         
-        // 每次循环都对齐所有视频（和拖动滑块完全一样的逻辑）
-        state.videos.forEach(v => {
-          if (v.id === state.videos[0].id) return;
-          const video = document.getElementById(`syncvideo-${v.id}`);
-          if (!video) return;
-          const offset = state.offsets[v.id] || 0;
-          const targetTime = Math.max(0, baseTime + offset);
-          // 只有偏移超过0.05秒才seek，避免频繁微调导致卡顿
-          if (Math.abs(video.currentTime - targetTime) > 0.05) {
-            video.currentTime = targetTime;
-          }
-        });
+        // 每500ms检查一次偏移，避免每帧seek导致卡顿
+        if (timestamp - lastCheckTime >= 500) {
+          lastCheckTime = timestamp;
+          
+          state.videos.forEach((v, idx) => {
+            if (idx === 0) return; // 跳过基准视频
+            const video = document.getElementById(`syncvideo-${v.id}`);
+            if (!video) return;
+            const offset = state.offsets[v.id] || 0;
+            const targetTime = Math.max(0, baseTime + offset);
+            // 偏移超过0.3秒才seek
+            if (Math.abs(video.currentTime - targetTime) > 0.3) {
+              video.currentTime = targetTime;
+            }
+          });
+        }
         
         // 更新UI显示
         if (Math.abs(baseTime - lastDisplayTime) >= 0.1) {
@@ -963,8 +988,8 @@ async function extractFrames(videoId) {
   const usableStart = duration * 0.05;  // 参考FrameSync：5%~95%
   const usableEnd = duration * 0.95;
   
-  // 参考FrameSync：采样5帧
-  const sampleCount = 5;
+  // 参考FrameSync：采样8帧（提高回归精度）
+  const sampleCount = 8;
   const calibPoints = [];
   const usedTimes = new Set();
   
@@ -1032,7 +1057,7 @@ async function extractFrames(videoId) {
   state.frames[videoId] = calibPoints;
 }
 
-// ===== 计算最佳偏移（纯OCR + Theil-Sen回归 + 离群值过滤）=====
+// ===== 计算最佳偏移（纯OCR + Theil-Sen回归 + 中位数timer值偏移）=====
 async function calculateBestOffset() {
   const videos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2);
   if (videos.length < 2) return;
@@ -1043,7 +1068,8 @@ async function calculateBestOffset() {
   console.log('[calculateBestOffset] Videos with calibration:', videos.length);
   
   const base = videos[0];
-  const baseReg = theilSenRegression(state.frames[base.id]);
+  const basePoints = state.frames[base.id];
+  const baseReg = theilSenRegression(basePoints);
   
   if (!baseReg) {
     state.bestOffset = 0;
@@ -1052,8 +1078,8 @@ async function calculateBestOffset() {
   
   console.log('[calculateBestOffset] Base reg:', baseReg);
   
-  let totalOffset = 0;
-  let validCount = 0;
+  // 收集所有 timer 值，取中位数作为参考点（避免外推到 T=0）
+  const allTimerValues = basePoints.map(p => p.timerValue);
   
   for (let i = 1; i < videos.length; i++) {
     const target = videos[i];
@@ -1063,11 +1089,12 @@ async function calculateBestOffset() {
     let reg = theilSenRegression(points);
     if (!reg) continue;
     
-    // 离群值过滤：移除残差 > 2秒的点
+    // 离群值过滤：移除残差 > 1.5秒的点（更严格）
     if (points.length > 3) {
       const residuals = points.map(p => Math.abs(p.videoTime - (reg.slope * p.timerValue + reg.intercept)));
-      const median = residuals.slice().sort((a, b) => a - b)[Math.floor(residuals.length / 2)];
-      const threshold = Math.max(2.0, median * 3); // 至少2秒或3倍中位数
+      const sorted = residuals.slice().sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      const threshold = Math.max(1.5, median * 2.5);
       const filtered = points.filter((p, idx) => residuals[idx] < threshold);
       
       if (filtered.length >= 2 && filtered.length < points.length) {
@@ -1078,18 +1105,44 @@ async function calculateBestOffset() {
       }
     }
     
-    // 偏移 = intercept_B - intercept_A
-    const offset = reg.intercept - baseReg.intercept;
+    // 收集目标视频的 timer 值取中位数
+    allTimerValues.push(...points.map(p => p.timerValue));
     
-    console.log(`[calculateBestOffset] ${target.name}: offset=${offset.toFixed(3)}s (intercept_B=${reg.intercept.toFixed(3)}, intercept_A=${baseReg.intercept.toFixed(3)})`);
+    // 在中位数 timer 值处计算偏移（而非 T=0 外推）
+    // offset(T) = targetReg(T) - baseReg(T)
+    allTimerValues.sort((a, b) => a - b);
+    const medianTimer = allTimerValues[Math.floor(allTimerValues.length / 2)];
+    
+    const baseTimeAtMedian = baseReg.slope * medianTimer + baseReg.intercept;
+    const targetTimeAtMedian = reg.slope * medianTimer + reg.intercept;
+    const offset = targetTimeAtMedian - baseTimeAtMedian;
+    
+    console.log(`[calculateBestOffset] ${target.name}: offset=${offset.toFixed(3)}s at timer=${medianTimer.toFixed(1)}s (targetSlope=${reg.slope.toFixed(4)}, baseSlope=${baseReg.slope.toFixed(4)})`);
     
     state.offsets[target.id] = offset;
-    totalOffset += offset;
-    validCount++;
   }
   
-  state.bestOffset = validCount > 0 ? totalOffset / validCount : 0;
-  console.log('[calculateBestOffset] bestOffset:', state.bestOffset.toFixed(3));
+  // 第二轮：对所有已计算偏移做一致性校验
+  // 如果某个偏移与其他视频的偏移差异过大，重新基于整体中位数调整
+  const allOffsets = Object.values(state.offsets).filter(o => o !== 0);
+  if (allOffsets.length > 1) {
+    allOffsets.sort((a, b) => a - b);
+    const medianOffset = allOffsets[Math.floor(allOffsets.length / 2)];
+    const mad = allOffsets.reduce((sum, o) => sum + Math.abs(o - medianOffset), 0) / allOffsets.length;
+    
+    for (let i = 1; i < videos.length; i++) {
+      const vid = videos[i];
+      const currentOffset = state.offsets[vid.id];
+      if (currentOffset === undefined) continue;
+      
+      if (Math.abs(currentOffset - medianOffset) > Math.max(2.0, mad * 3)) {
+        console.warn(`[calculateBestOffset] ${vid.name}: offset ${currentOffset.toFixed(3)}s is outlier (median=${medianOffset.toFixed(3)}s, mad=${mad.toFixed(3)}s), adjusting...`);
+        // 对离群值做加权修正：向中位数靠拢
+        state.offsets[vid.id] = currentOffset * 0.3 + medianOffset * 0.7;
+      }
+    }
+  }
+  
   setProgress(container, 100, '完成');
 }
 
