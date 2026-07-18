@@ -477,7 +477,13 @@ function startSyncPlay() {
     
     const baseVideo = document.getElementById(`syncvideo-${state.videos[0].id}`);
     let lastDisplayTime = -1;
-    let lastCheckTime = 0;
+    let lastAdjustTime = 0;
+    
+    // 缓存非基准视频的引用，避免每帧 DOM 查询
+    const otherVideos = state.videos.slice(1).map(v => ({
+      el: document.getElementById(`syncvideo-${v.id}`),
+      id: v.id,
+    })).filter(v => v.el);
     
     function syncLoop(timestamp) {
       if (!state.isPlaying) return;
@@ -485,21 +491,35 @@ function startSyncPlay() {
       if (baseVideo && !baseVideo.paused) {
         const baseTime = baseVideo.currentTime;
         
-        // 每500ms检查一次偏移，避免每帧seek导致卡顿
-        if (timestamp - lastCheckTime >= 500) {
-          lastCheckTime = timestamp;
+        // 每500ms同步一次
+        if (timestamp - lastAdjustTime >= 500) {
+          lastAdjustTime = timestamp;
           
-          state.videos.forEach((v, idx) => {
-            if (idx === 0) return; // 跳过基准视频
-            const video = document.getElementById(`syncvideo-${v.id}`);
-            if (!video) return;
-            const offset = state.offsets[v.id] || 0;
-            const targetTime = Math.max(0, baseTime + offset);
-            // 偏移超过0.3秒才seek
-            if (Math.abs(video.currentTime - targetTime) > 0.3) {
-              video.currentTime = targetTime;
+          for (const ov of otherVideos) {
+            const offset = state.offsets[ov.id] || 0;
+            const targetTime = baseTime + offset;
+            const drift = ov.el.currentTime - targetTime;
+            const absDrift = Math.abs(drift);
+            
+            if (absDrift < 0.05) {
+              // 漂移极小，恢复1x
+              if (Math.abs(ov.el.playbackRate - 1.0) > 0.001) {
+                ov.el.playbackRate = 1.0;
+              }
+            } else if (absDrift < 2.0) {
+              // 中小漂移：用 playbackRate 微调（极温和 ±2%）
+              // drift > 0 说明当前太快，需要减速 (<1.0)
+              // drift < 0 说明当前太慢，需要加速 (>1.0)
+              const correction = 1.0 - (drift > 0 ? 0.02 : -0.02);
+              ov.el.playbackRate = correction;
+            } else {
+              // 大漂移：暂停→seek→恢复（仅此情况才 seek）
+              ov.el.pause();
+              ov.el.currentTime = targetTime;
+              ov.el.playbackRate = 1.0;
+              ov.el.play().catch(() => {});
             }
-          });
+          }
         }
         
         // 更新UI显示
