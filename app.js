@@ -50,11 +50,18 @@ function setupUpload() {
 }
 
 // ===== 处理文件 =====
+const MAX_VIDEOS = 4;
+
 function handleFiles(files) {
   const validFiles = Array.from(files).filter(f => f.type.startsWith('video/'));
   
   if (validFiles.length === 0) {
     alert('请选择视频文件');
+    return;
+  }
+  
+  if (state.videos.length + validFiles.length > MAX_VIDEOS) {
+    alert(`最多只能添加 ${MAX_VIDEOS} 个视频`);
     return;
   }
   
@@ -282,19 +289,35 @@ async function analyzeVideos() {
   const compareArea = document.getElementById('comparisonArea');
   compareArea.innerHTML = '';
   
-  const totalSteps = state.videos.length + 1;
-  let currentStep = 0;
+  // 计算总帧数：每个视频8帧 + 1步偏移计算
+  const totalFrames = state.videos.length * 8;
+  let completedFrames = 0;
+  
+  // 创建固定进度条
+  container.innerHTML = `
+    <div class="progress-container">
+      <div class="progress-label" id="analysisLabel">准备分析...</div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="analysisFill" style="width:0%"></div>
+      </div>
+    </div>`;
   
   for (let i = 0; i < state.videos.length; i++) {
     const v = state.videos[i];
-    currentStep = i;
-    setProgress(container, (currentStep / totalSteps) * 100, `正在识别 ${v.name} (${i+1}/${state.videos.length})`);
-    await extractFrames(v.id);
+    // 把回调传给 extractFrames，让它每完成一帧就更新同一根进度条
+    await extractFrames(v.id, (frameIdx) => {
+      completedFrames = i * 8 + frameIdx;
+      const percent = (completedFrames / totalFrames) * 100;
+      document.getElementById('analysisFill').style.width = percent + '%';
+      document.getElementById('analysisLabel').textContent = `正在OCR识别 ${v.name} 帧 ${frameIdx}/8`;
+    });
   }
   
-  currentStep = state.videos.length;
-  setProgress(container, (currentStep / totalSteps) * 100, '正在计算偏移...');
+  // 最后一步：计算偏移
+  document.getElementById('analysisLabel').textContent = '正在计算偏移...';
+  document.getElementById('analysisFill').style.width = '95%';
   await calculateBestOffset();
+  document.getElementById('analysisFill').style.width = '100%';
   
   // 构建各视频偏移显示
   const offsetSummary = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2)
@@ -477,13 +500,6 @@ function startSyncPlay() {
     
     const baseVideo = document.getElementById(`syncvideo-${state.videos[0].id}`);
     let lastDisplayTime = -1;
-    let lastAdjustTime = 0;
-    
-    // 缓存非基准视频的引用，避免每帧 DOM 查询
-    const otherVideos = state.videos.slice(1).map(v => ({
-      el: document.getElementById(`syncvideo-${v.id}`),
-      id: v.id,
-    })).filter(v => v.el);
     
     function syncLoop(timestamp) {
       if (!state.isPlaying) return;
@@ -491,38 +507,7 @@ function startSyncPlay() {
       if (baseVideo && !baseVideo.paused) {
         const baseTime = baseVideo.currentTime;
         
-        // 每500ms同步一次
-        if (timestamp - lastAdjustTime >= 500) {
-          lastAdjustTime = timestamp;
-          
-          for (const ov of otherVideos) {
-            const offset = state.offsets[ov.id] || 0;
-            const targetTime = baseTime + offset;
-            const drift = ov.el.currentTime - targetTime;
-            const absDrift = Math.abs(drift);
-            
-            if (absDrift < 0.05) {
-              // 漂移极小，恢复1x
-              if (Math.abs(ov.el.playbackRate - 1.0) > 0.001) {
-                ov.el.playbackRate = 1.0;
-              }
-            } else if (absDrift < 2.0) {
-              // 中小漂移：用 playbackRate 微调（极温和 ±2%）
-              // drift > 0 说明当前太快，需要减速 (<1.0)
-              // drift < 0 说明当前太慢，需要加速 (>1.0)
-              const correction = 1.0 - (drift > 0 ? 0.02 : -0.02);
-              ov.el.playbackRate = correction;
-            } else {
-              // 大漂移：暂停→seek→恢复（仅此情况才 seek）
-              ov.el.pause();
-              ov.el.currentTime = targetTime;
-              ov.el.playbackRate = 1.0;
-              ov.el.play().catch(() => {});
-            }
-          }
-        }
-        
-        // 更新UI显示
+        // 更新UI显示（只更新进度条，不碰任何视频属性）
         if (Math.abs(baseTime - lastDisplayTime) >= 0.1) {
           lastDisplayTime = baseTime;
           slider.value = baseTime;
@@ -972,7 +957,7 @@ function theilSenRegression(points) {
 }
 
 // ===== 核心算法：提取帧并OCR读取计时器（完全参考FrameSync）=====
-async function extractFrames(videoId) {
+async function extractFrames(videoId, onFrameDone) {
   const v = state.videos.find(v => v.id === videoId);
   const region = state.regions[videoId];
   
@@ -1060,9 +1045,8 @@ async function extractFrames(videoId) {
       if (retry.value !== null) result = retry;
     }
     
-    // 更新进度条
-    const percent = ((i + 1) / sampleCount) * 80;
-    setProgress(container, percent, `正在OCR识别 ${v.name} 帧 ${i+1}/${sampleCount}`);
+    // 更新进度（回调给 analyzeVideos）
+    if (onFrameDone) onFrameDone(i + 1);
     
     console.log(`[extractFrames] Frame ${i+1}: time=${time.toFixed(2)}s, text="${result.text}", value=${result.value}`);
     
