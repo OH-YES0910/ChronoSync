@@ -1,13 +1,13 @@
 /**
- * 狂野飙车9 - 跑图视频对比工具
- * 基于帧特征签名余弦距离自动对齐
+ * ChronoSync - Asphalt 9 racing video comparison tool
+ * OCR + Theil-Sen regression for automatic timer alignment
  */
 
 // ===== 全局状态 =====
 const state = {
   videos: [],              // [{id, file, url, name, duration}]
   regions: {},             // {videoId: {x, y, w, h}} 百分比
-  frames: {},              // {videoId: [{time, signature}]}
+  frames: {},  // {videoId: [{videoTime, timerValue}]}
   offsets: {},             // {videoId: offsetSeconds}
   bestOffset: 0,           // 最佳偏移量
   isPlaying: false,
@@ -251,242 +251,53 @@ function autoRegion(videoId) {
   
   const rect = selector.getBoundingClientRect();
   
-  state.regions[videoId] = { x: 78, y: 8, w: 18, h: 6 };
+  state.regions[videoId] = { x: 78, y: 8, w: 18, h: 14 };
   
   box.style.left = (rect.width * 0.78) + 'px';
   box.style.top = (rect.height * 0.08) + 'px';
   box.style.width = (rect.width * 0.18) + 'px';
-  box.style.height = (rect.height * 0.06) + 'px';
+  box.style.height = (rect.height * 0.14) + 'px';
   box.classList.add('active');
   
-  display.textContent = 'x=78% y=8% w=18% h=6% (已避开速度表)';
+  display.textContent = 'x=78% y=8% w=18% h=14% (已避开速度表)';
   display.style.color = 'var(--success)';
   updateButtons();
+}
+
+// ===== 进度条工具 =====
+function setProgress(container, percent, label) {
+  container.innerHTML = `
+    <div class="progress-container">
+      <div class="progress-label">${label}</div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" style="width:${percent}%"></div>
+      </div>
+    </div>`;
 }
 
 // ===== 步骤3: 分析视频 =====
 async function analyzeVideos() {
   const container = document.getElementById('analysisResult');
   const compareArea = document.getElementById('comparisonArea');
-  container.innerHTML = '<div class="loading">正在分析视频...</div>';
   compareArea.innerHTML = '';
+  
+  const totalSteps = state.videos.length + 1;
+  let currentStep = 0;
   
   for (let i = 0; i < state.videos.length; i++) {
     const v = state.videos[i];
-    container.innerHTML = `<div class="loading">正在提取 ${v.name} 的帧 (${i+1}/${state.videos.length})...</div>`;
+    currentStep = i;
+    setProgress(container, (currentStep / totalSteps) * 100, `正在识别 ${v.name} (${i+1}/${state.videos.length})`);
     await extractFrames(v.id);
   }
   
+  currentStep = state.videos.length;
+  setProgress(container, (currentStep / totalSteps) * 100, '正在计算偏移...');
   await calculateBestOffset();
   
   container.innerHTML = `<div class="done">分析完成！最佳偏移: ${state.bestOffset.toFixed(3)}秒</div>`;
   
   initSync();
-}
-
-// ===== 提取帧（稀疏采样：3帧用于粗匹配）=====
-async function extractFrames(videoId) {
-  const v = state.videos.find(v => v.id === videoId);
-  const region = state.regions[videoId];
-  
-  if (!v || !region) return;
-  
-  const video = document.createElement('video');
-  video.src = v.url;
-  video.muted = true;
-  
-  await new Promise(resolve => {
-    video.addEventListener('loadedmetadata', resolve);
-    video.load();
-  });
-  
-  v.duration = video.duration;
-  
-  const duration = video.duration;
-  // 稀疏采样：在第5秒、第15秒、第25秒取3帧（避开开头倒计时）
-  const sampleTimes = [5, 15, 25].filter(t => t < duration - 1).map(t => Math.min(t, duration - 0.5));
-  const frames = [];
-  
-  for (const time of sampleTimes) {
-    video.currentTime = time;
-    await new Promise(resolve => {
-      video.addEventListener('seeked', resolve, { once: true });
-    });
-    
-    const signature = extractTimerSignature(video, region);
-    frames.push({ time, signature });
-  }
-  
-  state.frames[videoId] = frames;
-}
-
-// ===== 在指定时间范围内密集提取帧（复用已有video元素）=====
-async function extractFramesInRange(videoId, startTime, endTime, step) {
-  const v = state.videos.find(v => v.id === videoId);
-  const region = state.regions[videoId];
-  
-  if (!v || !region) return [];
-  
-  // 复用已有的video元素（如果有）
-  let video = document.getElementById(`video-${videoId}`);
-  if (!video) {
-    video = document.createElement('video');
-    video.src = v.url;
-    video.muted = true;
-    await new Promise(resolve => {
-      video.addEventListener('loadedmetadata', resolve);
-      video.load();
-    });
-  }
-  
-  const duration = video.duration;
-  const frames = [];
-  
-  for (let time = startTime; time <= endTime; time = Math.round((time + step) * 100) / 100) {
-    if (time < 0 || time >= duration - 0.1) continue;
-    
-    video.currentTime = time;
-    await new Promise(resolve => {
-      video.addEventListener('seeked', resolve, { once: true });
-    });
-    
-    const signature = extractTimerSignature(video, region);
-    frames.push({ time, signature });
-  }
-  
-  return frames;
-}
-
-// ===== 提取计时器特征签名（白色像素垂直投影）=====
-function extractTimerSignature(video, region) {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-  const sx = region.x / 100 * vw;
-  const sy = region.y / 100 * vh;
-  const sw = region.w / 100 * vw;
-  const sh = region.h / 100 * vh;
-  
-  const w = 128;
-  const h = 32;
-  canvas.width = w;
-  canvas.height = h;
-  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, w, h);
-  
-  const imageData = ctx.getImageData(0, 0, w, h);
-  const { data } = imageData;
-  
-  const projection = new Float64Array(w);
-  for (let x = 0; x < w; x++) {
-    let whiteCount = 0;
-    for (let y = 0; y < h; y++) {
-      const idx = (y * w + x) * 4;
-      const gray = data[idx] * 0.299 + data[idx+1] * 0.587 + data[idx+2] * 0.114;
-      if (gray > 160) whiteCount++;
-    }
-    projection[x] = whiteCount / h;
-  }
-  
-  return projection;
-}
-
-// ===== 计算最佳偏移（两阶段：3帧粗搜 + 局部密集帧精搜）=====
-async function calculateBestOffset() {
-  const videos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
-  if (videos.length < 2) return;
-  
-  const base = videos[0];
-  const baseFrames = state.frames[base.id];
-  
-  // 在排序帧列表中找最接近 targetTime 的签名
-  function findClosest(frameList, targetTime) {
-    let lo = 0, hi = frameList.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (frameList[mid].time < targetTime) lo = mid + 1;
-      else hi = mid;
-    }
-    if (lo > 0 && Math.abs(frameList[lo - 1].time - targetTime) < Math.abs(frameList[lo].time - targetTime)) {
-      return frameList[lo - 1];
-    }
-    return frameList[lo];
-  }
-  
-  // 用给定帧列表计算某个偏移的得分
-  function scoreAtOffset(offset, baseFrameList, targetFrameList) {
-    let total = 0, count = 0;
-    for (const bf of baseFrameList) {
-      const targetTime = bf.time + offset;
-      const closest = findClosest(targetFrameList, targetTime);
-      if (closest) {
-        total += cosineDistance(bf.signature, closest.signature);
-        count++;
-      }
-    }
-    return count > 0 ? total / count : Infinity;
-  }
-  
-  // ===== 第一阶段：用3帧稀疏采样做粗搜 =====
-  const container = document.getElementById('analysisResult');
-  container.innerHTML = '<div class="loading">第一阶段：粗略搜索（3帧）...</div>';
-  
-  let bestCoarseOffset = 0;
-  let bestCoarseScore = Infinity;
-  
-  // 粗搜：用base的3帧，和每个target的3帧比较
-  for (let offset = -30; offset <= 30; offset = Math.round((offset + 0.1) * 100) / 100) {
-    let totalScore = 0;
-    for (let i = 1; i < videos.length; i++) {
-      totalScore += scoreAtOffset(offset, baseFrames, state.frames[videos[i].id]);
-    }
-    const avgScore = totalScore / (videos.length - 1);
-    if (avgScore < bestCoarseScore) { bestCoarseScore = avgScore; bestCoarseOffset = offset; }
-  }
-  
-  container.innerHTML = `<div class="loading">粗略结果: ${bestCoarseOffset.toFixed(2)}s，正在精细搜索...</div>`;
-  
-  // ===== 第二阶段：在粗偏移附近密集提取帧做精搜 =====
-  const searchMargin = 0.2;
-  const searchStart = Math.max(0, bestCoarseOffset - searchMargin);
-  const searchEnd = bestCoarseOffset + searchMargin;
-  const fineStep = 0.02; // 0.02秒步长，提取约20帧
-  
-  // 提取base在局部范围的密集帧
-  const baseFineFrames = await extractFramesInRange(base.id, searchStart, searchEnd, fineStep);
-  
-  let bestFineOffset = bestCoarseOffset;
-  let bestFineScore = Infinity;
-  
-  // 为每个非base视频提取局部密集帧并搜索
-  for (let i = 1; i < videos.length; i++) {
-    const target = videos[i];
-    const targetFineFrames = await extractFramesInRange(target.id, searchStart, searchEnd, fineStep);
-    
-    // 在粗偏移附近±0.05s范围内，以0.001s步长精细搜索
-    const fineSearchStart = Math.round((bestCoarseOffset - 0.05) * 1000) / 1000;
-    const fineSearchEnd = Math.round((bestCoarseOffset + 0.05) * 1000) / 1000;
-    
-    for (let offset = fineSearchStart; offset <= fineSearchEnd; offset = Math.round((offset + 0.001) * 1000) / 1000) {
-      const s = scoreAtOffset(offset, baseFineFrames, targetFineFrames);
-      if (s < bestFineScore) { bestFineScore = s; bestFineOffset = offset; }
-    }
-  }
-  
-  state.bestOffset = bestFineOffset;
-}
-
-// ===== 余弦距离 =====
-function cosineDistance(a, b) {
-  let dot = 0, nA = 0, nB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    nA += a[i] * a[i];
-    nB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(nA) * Math.sqrt(nB);
-  return denom > 0 ? 1 - dot / denom : 1;
 }
 
 // ===== 步骤3: 同步对比 =====
@@ -519,28 +330,24 @@ function initSync() {
       </div>
     </div>
     
-    <div class="offset-controls">
-      ${validVideos.slice(1).map(v => `
-        <div class="offset-item">
-          <span>${v.name} 微调:</span>
-          <button onclick="adjustOffset('${v.id}', -0.001)">-0.001s</button>
-          <button onclick="adjustOffset('${v.id}', -0.01)">-0.01s</button>
-          <button onclick="adjustOffset('${v.id}', -0.1)">-0.1s</button>
-          <button onclick="adjustOffset('${v.id}', -1)">-1s</button>
-          <span id="offset-${v.id}">${(state.offsets[v.id] || 0).toFixed(3)}s</span>
-          <button onclick="adjustOffset('${v.id}', 1)">+1s</button>
-          <button onclick="adjustOffset('${v.id}', 0.1)">+0.1s</button>
-          <button onclick="adjustOffset('${v.id}', 0.01)">+0.01s</button>
-          <button onclick="adjustOffset('${v.id}', 0.001)">+0.001s</button>
-        </div>
-      `).join('')}
-    </div>
-    
     <div class="sync-videos">
       ${validVideos.map((v, i) => `
         <div class="sync-video">
           <h3>${v.name}</h3>
           <video id="syncvideo-${v.id}" muted playsinline></video>
+          <div class="video-offset-controls">
+            <span class="offset-label">偏移: <span id="offset-${v.id}">${(state.offsets[v.id] || 0).toFixed(3)}s</span></span>
+            <div class="offset-buttons">
+              <button onclick="adjustOffset('${v.id}', -1)">-1s</button>
+              <button onclick="adjustOffset('${v.id}', -0.1)">-0.1s</button>
+              <button onclick="adjustOffset('${v.id}', -0.01)">-0.01s</button>
+              <button onclick="adjustOffset('${v.id}', -0.001)">-0.001s</button>
+              <button onclick="adjustOffset('${v.id}', 0.001)">+0.001s</button>
+              <button onclick="adjustOffset('${v.id}', 0.01)">+0.01s</button>
+              <button onclick="adjustOffset('${v.id}', 0.1)">+0.1s</button>
+              <button onclick="adjustOffset('${v.id}', 1)">+1s</button>
+            </div>
+          </div>
         </div>
       `).join('')}
     </div>
@@ -935,17 +742,248 @@ function adjustOffset(videoId, delta) {
   updateSyncFromSlider();
 }
 
+// ===== OCR + Theil-Sen 回归对齐算法 =====
+
+// 从OCR文本解析计时器值（秒）
+function parseTimerText(text) {
+  // 清理文本
+  const cleaned = text.replace(/[^0-9:.,]/g, '').trim();
+  
+  // 尝试匹配 MM:SS 或 MM:SS.m 或 MM:S 格式
+  let match = cleaned.match(/(\d+):(\d{1,2})(?:[.,](\d+))?/);
+  if (match) {
+    const mins = parseInt(match[1]);
+    const secs = parseInt(match[2]);
+    const ms = match[3] ? parseFloat('0.' + match[3]) : 0;
+    if (mins <= 30 && secs < 60) return mins * 60 + secs + ms;
+  }
+  
+  // 尝试纯数字（可能是秒数，如 "22." 或 "40,"）
+  match = cleaned.match(/^(\d+)(?:[.,](\d+))?$/);
+  if (match) {
+    const whole = parseInt(match[1]);
+    const frac = match[2] ? parseFloat('0.' + match[2]) : 0;
+    if (whole <= 30) {
+      // 直接当秒数
+      return whole + frac;
+    }
+    if (whole > 100 && whole < 10000) {
+      // 可能是 MMSS 格式
+      const mins = Math.floor(whole / 100);
+      const secs = whole % 100;
+      if (mins <= 30 && secs < 60) return mins * 60 + secs + frac;
+    }
+  }
+  
+  return null;
+}
+
+// 用OCR读取单帧的计时器值（参考FrameSync: 160x36 裸 canvas，不做预处理）
+// 自动扩展ROI：用户框选可能偏小，OCR时扩大范围确保捕获完整计时器
+async function readTimerValue(video, region) {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  
+  // 自动扩展ROI（FrameSync默认 w=16%, h=14%，用户的可能偏小）
+  const expandX = 3; // 向左扩展3%
+  const expandY = 4; // 向上扩展4%
+  const expandW = 6; // 宽度扩展6%
+  const expandH = 8; // 高度扩展8%
+  
+  const rx = Math.max(0, region.x - expandX) / 100 * vw;
+  const ry = Math.max(0, region.y - expandY) / 100 * vh;
+  const rw = Math.min(100, region.x + region.w + expandW) / 100 * vw - rx;
+  const rh = Math.min(100, region.y + region.h + expandH) / 100 * vh - ry;
+  
+  // FrameSync的方式：固定160x36 canvas，不做任何预处理
+  const canvas = document.createElement('canvas');
+  canvas.width = 160;
+  canvas.height = 36;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, rx, ry, rw, rh, 0, 0, 160, 36);
+  
+  try {
+    const { data } = await Tesseract.recognize(canvas, 'eng');
+    const text = data.text.trim();
+    const value = parseTimerText(text);
+    console.log('[OCR]', { text, value, confidence: data.confidence, roi: `expanded from ${region.w.toFixed(1)}x${region.h.toFixed(1)}%` });
+    return { text, value, confidence: data.confidence };
+  } catch (e) {
+    console.error('[OCR Error]', e);
+    return { text: '', value: null, confidence: 0 };
+  }
+}
+
+// Theil-Sen 稳健回归：计算中位数斜率
+// 返回 { slope, intercept } 使得 timerValue ≈ slope * videoTime + intercept
+function theilSenRegression(points) {
+  if (points.length < 2) return null;
+  
+  // 计算所有点对的斜率
+  const slopes = [];
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const dx = points[j].videoTime - points[i].videoTime;
+      if (Math.abs(dx) > 0.001) { // 避免除零
+        const dy = points[j].timerValue - points[i].timerValue;
+        slopes.push(dy / dx);
+      }
+    }
+  }
+  
+  if (slopes.length === 0) return null;
+  
+  // 取中位数斜率
+  slopes.sort((a, b) => a - b);
+  const medianSlope = slopes[Math.floor(slopes.length / 2)];
+  
+  // 用中位数斜率计算截距的中位数
+  const intercepts = points.map(p => p.timerValue - medianSlope * p.videoTime);
+  intercepts.sort((a, b) => a - b);
+  const medianIntercept = intercepts[Math.floor(intercepts.length / 2)];
+  
+  return { slope: medianSlope, intercept: medianIntercept };
+}
+
+// ===== 核心算法：提取帧并OCR读取计时器（参考FrameSync）=====
+async function extractFrames(videoId) {
+  const v = state.videos.find(v => v.id === videoId);
+  const region = state.regions[videoId];
+  
+  if (!v || !region) return;
+  
+  console.log('[extractFrames] Starting for', v.name, 'region:', region);
+  
+  const video = document.createElement('video');
+  video.src = v.url;
+  video.muted = true;
+  video.preload = 'auto';
+  
+  // 带超时的 metadata 加载
+  await Promise.race([
+    new Promise(resolve => {
+      video.addEventListener('loadedmetadata', resolve);
+      video.load();
+    }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('视频加载超时')), 30000))
+  ]);
+  
+  v.duration = video.duration;
+  console.log('[extractFrames] Video loaded:', v.name, `${video.videoWidth}x${video.videoHeight}`, `duration=${video.duration}s`);
+  
+  const duration = video.duration;
+  const usableStart = duration * 0.08;
+  const usableEnd = duration * 0.95;
+  
+  // 采样5帧用于OCR校准
+  const sampleCount = 5;
+  const calibPoints = [];
+  const usedTimes = new Set();
+  
+  const container = document.getElementById('analysisResult');
+  
+  for (let i = 0; i < sampleCount; i++) {
+    // 随机采样（参考FrameSync的autoSample）
+    let time;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const t = usableStart + Math.random() * (usableEnd - usableStart);
+      const key = Math.round(t * 1000);
+      if (!usedTimes.has(key)) {
+        usedTimes.add(key);
+        time = t;
+        break;
+      }
+    }
+    if (time === undefined) time = usableStart + (usableEnd - usableStart) * i / (sampleCount - 1);
+    
+    video.currentTime = time;
+    await new Promise(resolve => {
+      video.addEventListener('seeked', resolve, { once: true });
+    });
+    
+    const result = await readTimerValue(video, region);
+    
+    // 更新进度条
+    const percent = ((i + 1) / sampleCount) * 80;
+    setProgress(container, percent, `正在OCR识别 ${v.name} 帧 ${i+1}/${sampleCount}`);
+    
+    console.log(`[extractFrames] Frame ${i+1}: time=${time.toFixed(2)}s, text="${result.text}", value=${result.value}, confidence=${result.confidence}`);
+    
+    if (result.value !== null) {
+      calibPoints.push({ videoTime: time, timerValue: result.value });
+    }
+  }
+  
+  console.log('[extractFrames] Done for', v.name, `calibPoints=${calibPoints.length}`);
+  
+  // 存储校准点
+  state.frames[videoId] = calibPoints;
+}
+
+// ===== 计算最佳偏移（纯OCR + Theil-Sen回归 + 离群值过滤）=====
+async function calculateBestOffset() {
+  const videos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2);
+  if (videos.length < 2) return;
+  
+  const container = document.getElementById('analysisResult');
+  setProgress(container, 85, '正在计算偏移...');
+  
+  console.log('[calculateBestOffset] Videos with calibration:', videos.length);
+  
+  const base = videos[0];
+  const baseReg = theilSenRegression(state.frames[base.id]);
+  
+  if (!baseReg) {
+    state.bestOffset = 0;
+    return;
+  }
+  
+  console.log('[calculateBestOffset] Base reg:', baseReg);
+  
+  let totalOffset = 0;
+  let validCount = 0;
+  
+  for (let i = 1; i < videos.length; i++) {
+    const target = videos[i];
+    let points = state.frames[target.id];
+    
+    // 第一轮：初步回归
+    let reg = theilSenRegression(points);
+    if (!reg) continue;
+    
+    // 离群值过滤：移除残差 > 2秒的点
+    if (points.length > 3) {
+      const residuals = points.map(p => Math.abs(p.timerValue - (reg.slope * p.videoTime + reg.intercept)));
+      const median = residuals.slice().sort((a, b) => a - b)[Math.floor(residuals.length / 2)];
+      const threshold = Math.max(2.0, median * 3); // 至少2秒或3倍中位数
+      const filtered = points.filter((p, idx) => residuals[idx] < threshold);
+      
+      if (filtered.length >= 2 && filtered.length < points.length) {
+        console.log(`[calculateBestOffset] ${target.name}: filtered ${points.length} → ${filtered.length} points (threshold=${threshold.toFixed(2)}s)`);
+        points = filtered;
+        reg = theilSenRegression(points);
+        if (!reg) continue;
+      }
+    }
+    
+    // 偏移 = intercept_B - intercept_A
+    const offset = reg.intercept - baseReg.intercept;
+    
+    console.log(`[calculateBestOffset] ${target.name}: offset=${offset.toFixed(3)}s (intercept_B=${reg.intercept.toFixed(3)}, intercept_A=${baseReg.intercept.toFixed(3)})`);
+    
+    state.offsets[target.id] = offset;
+    totalOffset += offset;
+    validCount++;
+  }
+  
+  state.bestOffset = validCount > 0 ? totalOffset / validCount : 0;
+  console.log('[calculateBestOffset] bestOffset:', state.bestOffset.toFixed(3));
+  setProgress(container, 100, '完成');
+}
+
 // ===== 工具函数 =====
 function generateId() {
   return Math.random().toString(36).substr(2, 9);
-}
-
-function formatTime(seconds) {
-  if (seconds < 0 || isNaN(seconds)) return '0:00.0';
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  const tenths = Math.floor((seconds * 10) % 10);
-  return `${mins}:${String(secs).padStart(2, '0')}.${tenths}`;
 }
 
 // ===== 启动 =====
