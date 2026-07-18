@@ -316,6 +316,13 @@ function initSync() {
     if (v.duration > maxTime) maxTime = v.duration;
   }
   
+  // 构建每个视频的偏移显示信息（不再用 bestOffset 单值）
+  const offsetInfo = validVideos.map((v, i) => {
+    const offset = state.offsets[v.id] || 0;
+    const label = i === 0 ? '基准' : `+${offset.toFixed(3)}s`;
+    return `<span class="offset-tag ${i === 0 ? 'base' : ''}">${v.name.replace(/\.[^.]+$/, '')}: ${label}</span>`;
+  }).join(' ');
+  
   container.innerHTML = `
     <div class="sync-controls">
       <div class="timer-control">
@@ -325,10 +332,10 @@ function initSync() {
       </div>
       <div class="play-control">
         <button id="playBtn" onclick="toggleSyncPlay()">▶ 同步播放</button>
+        <button class="btn-action" onclick="reselectVideos()">🔄 重新选择</button>
+        <button class="btn-action" onclick="recalculate()">🔄 重新计算</button>
       </div>
-      <div class="offset-display">
-        <span>自动偏移: ${state.bestOffset.toFixed(3)}s</span>
-      </div>
+      <div class="offset-display">${offsetInfo}</div>
     </div>
     
     <div class="sync-videos">
@@ -376,11 +383,12 @@ function initSync() {
     </div>
   `;
   
+  // 加载视频，保留各自已计算的 offset（不再覆盖）
   validVideos.forEach((v, i) => {
     const video = document.getElementById(`syncvideo-${v.id}`);
     video.src = v.url;
     video.load();
-    state.offsets[v.id] = i === 0 ? 0 : state.bestOffset;
+    // 不再覆盖 state.offsets — calculateBestOffset 已经为每个视频独立计算
   });
   
   const slider = document.getElementById('timeSlider');
@@ -448,8 +456,8 @@ function startSyncPlay() {
     });
     
     const baseVideo = document.getElementById(`syncvideo-${state.videos[0].id}`);
-    let lastBaseTime = baseVideo ? baseVideo.currentTime : 0;
     let frameCount = 0;
+    let lastSyncTime = 0;
     
     function syncLoop() {
       if (!state.isPlaying) return;
@@ -464,8 +472,10 @@ function startSyncPlay() {
           document.getElementById('timeDisplay').textContent = currentTime.toFixed(1) + 's';
         }
         
-        // 每30帧（约0.5秒）同步一次其他视频的播放速率
-        if (frameCount % 30 === 0) {
+        // 每秒同步一次（用时间间隔判断，不用帧数）
+        if (currentTime - lastSyncTime >= 1.0) {
+          lastSyncTime = currentTime;
+          
           state.videos.forEach(v => {
             if (v.id === state.videos[0].id) return;
             const video = document.getElementById(`syncvideo-${v.id}`);
@@ -475,15 +485,23 @@ function startSyncPlay() {
               const drift = video.currentTime - targetTime;
               const absDrift = Math.abs(drift);
               
-              if (absDrift > 1.0) {
-                // 大偏移直接seek（暂停播放再恢复，避免卡顿）
+              if (absDrift > 5.0) {
+                // 极大偏移才seek，暂停+seek+恢复
+                const wasPlaying = !video.paused;
+                video.pause();
                 video.currentTime = targetTime;
-              } else if (absDrift > 0.1) {
-                // 中等偏移用playbackRate微调
-                video.playbackRate = 1.0 - drift * 0.3;
-                video.playbackRate = Math.max(0.85, Math.min(1.15, video.playbackRate));
+                video.addEventListener('seeked', () => {
+                  if (wasPlaying && state.isPlaying) video.play();
+                }, { once: true });
+              } else if (absDrift > 0.5) {
+                // 中等偏移用极温和的playbackRate微调（±3%）
+                const correction = 1.0 - drift * 0.05;
+                video.playbackRate = Math.max(0.97, Math.min(1.03, correction));
               } else {
-                video.playbackRate = 1.0;
+                // 小偏移或无偏移恢复1.0
+                if (Math.abs(video.playbackRate - 1.0) > 0.001) {
+                  video.playbackRate = 1.0;
+                }
               }
             }
           });
@@ -734,6 +752,38 @@ async function exportVideo() {
     exportBtn.textContent = '📹 导出视频';
     state.exporting = false;
   }
+}
+
+// ===== 重新选择视频（回到步骤1）=====
+function reselectVideos() {
+  if (state.isPlaying) pauseSyncPlay();
+  // 清理旧数据
+  state.videos.forEach(v => {
+    URL.revokeObjectURL(v.url);
+    delete state.regions[v.id];
+    delete state.frames[v.id];
+    delete state.offsets[v.id];
+  });
+  state.videos = [];
+  state.bestOffset = 0;
+  document.getElementById('comparisonArea').innerHTML = '';
+  document.getElementById('analysisResult').innerHTML = '';
+  document.getElementById('videoList').innerHTML = '';
+  document.getElementById('nextBtn1').disabled = true;
+  goToStep(1);
+}
+
+// ===== 重新计算（保留视频和区域，重新OCR分析）=====
+async function recalculate() {
+  if (state.isPlaying) pauseSyncPlay();
+  // 清除旧的帧数据和偏移
+  state.videos.forEach(v => {
+    delete state.frames[v.id];
+    state.offsets[v.id] = 0;
+  });
+  state.bestOffset = 0;
+  document.getElementById('comparisonArea').innerHTML = '';
+  goToStep(3);
 }
 
 // ===== 偏移调整 =====
