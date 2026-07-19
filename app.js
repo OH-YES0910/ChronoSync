@@ -402,24 +402,22 @@ async function autoDetectRegion(videoId) {
   }
   
   const dur = video.duration;
-  // 只采样2帧（速度优先），取密度最高的
-  const sampleTimes = [0.3, 0.7].map(p => Math.floor(dur * p)).filter(t => t > 1 && t < dur - 1);
+  // 采样8帧，按位置聚类投票
+  const sampleTimes = [];
+  for (let i = 0; i < 8; i++) {
+    const t = Math.floor(dur * (0.1 + 0.8 * i / 7));
+    if (t > 1 && t < dur - 1) sampleTimes.push(t);
+  }
   
-  let bestResult = null;
-  let bestCount = 0;
-  
+  const detections = [];
   for (const t of sampleTimes) {
     const imageData = await sampleFrame(t);
     if (!imageData) continue;
     const result = findTimer(imageData);
-    if (result && result.count > bestCount) {
-      bestCount = result.count;
-      bestResult = {...result, seekTime: t};
-    }
-    if (bestCount > 100) break;
+    if (result) detections.push({...result, seekTime: t});
   }
   
-  if (!bestResult) {
+  if (detections.length === 0) {
     console.log('autoDetectRegion debug:', lastDebug);
     const debugStr = lastDebug ? JSON.stringify(lastDebug) : 'no debug';
     display.textContent = `未检测到计时器(${debugStr})`;
@@ -428,7 +426,35 @@ async function autoDetectRegion(videoId) {
     return;
   }
   
-  const {minX, maxX, minY, maxY, count, seekTime} = bestResult;
+  // 按位置聚类：中心点差距<5%的归为同一类
+  const clusters = [];
+  for (const d of detections) {
+    const cx = (d.minX + d.maxX) / 2 / vw;
+    const cy = (d.minY + d.maxY) / 2 / vh;
+    let matched = false;
+    for (const cl of clusters) {
+      if (Math.abs(cx - cl.cx) < 0.05 && Math.abs(cy - cl.cy) < 0.05) {
+        cl.items.push(d);
+        cl.cx = cl.items.reduce((s, x) => s + (x.minX + x.maxX) / 2 / vw, 0) / cl.items.length;
+        cl.cy = cl.items.reduce((s, y) => s + (y.minY + y.maxY) / 2 / vh, 0) / cl.items.length;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) clusters.push({cx, cy, items: [d]});
+  }
+  
+  // 选投票最多的簇，取簇内均值
+  clusters.sort((a, b) => b.items.length - a.items.length);
+  const bestCluster = clusters[0];
+  const minX = Math.round(bestCluster.items.reduce((s, x) => s + x.minX, 0) / bestCluster.items.length);
+  const maxX = Math.round(bestCluster.items.reduce((s, x) => s + x.maxX, 0) / bestCluster.items.length);
+  const minY = Math.round(bestCluster.items.reduce((s, y) => s + y.minY, 0) / bestCluster.items.length);
+  const maxY = Math.round(bestCluster.items.reduce((s, y) => s + y.maxY, 0) / bestCluster.items.length);
+  const seekTime = bestCluster.items[0].seekTime;
+  const count = bestCluster.items.reduce((s, x) => s + x.count, 0);
+  
+  console.log('autoDetectRegion:', {clusters: clusters.length, bestVotes: bestCluster.items.length, minX, maxX, minY, maxY});
   const tW=maxX-minX, tH=maxY-minY;
   const padX = Math.max(Math.floor(tW*0.15), Math.floor(vw*0.003));
   const padY = Math.max(Math.floor(tH*0.2), Math.floor(vh*0.002));
@@ -483,37 +509,25 @@ async function analyzeVideos() {
   const compareArea = document.getElementById('comparisonArea');
   compareArea.innerHTML = '';
   
-  // 计算总帧数：每个视频8帧 + 1步偏移计算
-  const totalFrames = state.videos.length * 8;
-  let completedFrames = 0;
-  
   // 创建固定进度条
   container.innerHTML = `
     <div class="progress-container">
-      <div class="progress-label" id="analysisLabel">准备分析...</div>
+      <div class="progress-label" id="analysisLabel">正在分析...</div>
       <div class="progress-bar-track">
         <div class="progress-bar-fill" id="analysisFill" style="width:0%"></div>
       </div>
     </div>`;
   
   try {
-    for (let i = 0; i < state.videos.length; i++) {
-      const v = state.videos[i];
-      await extractFrames(v.id, (frameIdx) => {
-        completedFrames = i * 8 + frameIdx;
-        const percent = (completedFrames / totalFrames) * 85;
-        const fillEl = document.getElementById('analysisFill');
-        const labelEl = document.getElementById('analysisLabel');
-        if (fillEl) fillEl.style.width = percent + '%';
-        if (labelEl) labelEl.textContent = `正在OCR识别 ${v.name} 帧 ${frameIdx}/8`;
-      });
-    }
-    
-    // 最后一步：计算偏移（不使用 setProgress，避免覆盖进度条DOM）
+    // 并行处理所有视频OCR
     const fillEl = document.getElementById('analysisFill');
     const labelEl = document.getElementById('analysisLabel');
-    if (labelEl) labelEl.textContent = '正在计算偏移...';
+    
+    await Promise.all(state.videos.map(v => extractFrames(v.id)));
+    
     if (fillEl) fillEl.style.width = '90%';
+    if (labelEl) labelEl.textContent = '正在分析...';
+    
     await calculateBestOffset();
     if (fillEl) fillEl.style.width = '100%';
     
@@ -881,7 +895,7 @@ async function exportVideo() {
     // 开始录制
     recorder.start();
     
-    // 逐帧渲染
+    // 逐帧渲染（去掉帧间等待，用requestFrame()快速推送）
     for (let frameIdx = 0; frameIdx < totalFrames; frameIdx++) {
       if (!state.exporting) break;
       
@@ -905,7 +919,7 @@ async function exportVideo() {
           }
           vid.currentTime = targetTime;
           vid.addEventListener('seeked', resolve, { once: true });
-          setTimeout(resolve, 500);
+          setTimeout(resolve, 200);
         });
       });
       
@@ -922,17 +936,14 @@ async function exportVideo() {
           ctx.drawImage(vid, i * vw, 0, vw, vh);
         });
       } else if (layout === 'top1-bottom2' && validVideos.length === 3) {
-        // 上面1个居中，下面2个
         ctx.drawImage(exportVideos[0], vw * 0.5, 0, vw, vh);
         ctx.drawImage(exportVideos[1], 0, vh, vw, vh);
         ctx.drawImage(exportVideos[2], vw, vh, vw, vh);
       } else if (layout === 'top2-bottom1' && validVideos.length === 3) {
-        // 上面2个，下面1个居中
         ctx.drawImage(exportVideos[0], 0, 0, vw, vh);
         ctx.drawImage(exportVideos[1], vw, 0, vw, vh);
         ctx.drawImage(exportVideos[2], vw * 0.5, vh, vw, vh);
       } else {
-        // vertical: 竖向排列
         validVideos.forEach((v, i) => {
           const vid = exportVideos[i];
           ctx.drawImage(vid, 0, i * vh, vw, vh);
@@ -943,7 +954,7 @@ async function exportVideo() {
         stream.requestFrame();
       }
       
-      await new Promise(resolve => setTimeout(resolve, 1000 / fps));
+      // 不再等待，立即推送下一帧
     }
     
     // 停止录制
