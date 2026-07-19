@@ -280,144 +280,143 @@ async function autoDetectRegion(videoId) {
   async function sampleFrame(targetTime) {
     if (targetTime < 1) return null;
     video.currentTime = targetTime;
+    // 只等 seeked 事件 + 1次 RAF，不 play/pause（节省~1秒/帧）
     await new Promise(resolve => {
       const h = () => { video.removeEventListener('seeked', h); resolve(); };
       video.addEventListener('seeked', h);
-      setTimeout(resolve, 3000);
+      setTimeout(resolve, 2000); // 2秒超时
     });
     if (Math.abs(video.currentTime - targetTime) > 1) { lastDebug = {err:'seek failed', actual: video.currentTime}; return null; }
-    try { await video.play(); } catch(e) { lastDebug = {err:'play failed', msg: e.message}; return null; }
-    await new Promise(r => setTimeout(r, 120));
-    video.pause();
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    if (Math.abs(video.currentTime - targetTime) > 2) { lastDebug = {err:'drift', actual: video.currentTime}; return null; }
+    await new Promise(r => requestAnimationFrame(r));
     
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     canvas.width = vw; canvas.height = vh;
     ctx.drawImage(video, 0, 0, vw, vh);
     
-    // 采样多个位置的亮度
-    const samples = [
-      {name:'center', x: vw*0.5, y: vh*0.5},
-      {name:'timer85x15', x: vw*0.85, y: vh*0.15},
-      {name:'topRight', x: vw*0.9, y: vh*0.1}
-    ];
-    const pixelInfo = samples.map(s => {
-      const c = ctx.getImageData(Math.floor(s.x), Math.floor(s.y), 1, 1).data;
-      return {name:s.name, r:c[0], g:c[1], b:c[2], avg: Math.round((c[0]+c[1]+c[2])/3)};
-    });
-    lastDebug = {targetTime, samples: pixelInfo, vw, vh};
-    
-    const centerAvg = pixelInfo.find(p=>p.name==='center').avg;
+    // 快速检查是否黑帧
+    const c = ctx.getImageData(Math.floor(vw*0.5), Math.floor(vh*0.5), 1, 1).data;
+    const centerAvg = Math.round((c[0]+c[1]+c[2])/3);
+    lastDebug = {targetTime, centerAvg, vw, vh};
     if (centerAvg < 10) { lastDebug.err = 'black frame'; return null; }
     return ctx.getImageData(0, 0, vw, vh);
   }
   
   function findTimer(imageData) {
     const data = imageData.data;
-    // 基于用户截图验证的精确范围：
-    // 黄色背景: x≈80%~95%, y≈13%~18%
-    // 红色背景: x≈82%~96%, y≈13%~18%
-    // 取交集+余量：x:78%~96%, y:10%~20%
-    const sx = Math.floor(vw * 0.78);
-    const ex = Math.floor(vw * 0.96);
-    const sy = Math.floor(vh * 0.10);
-    const ey = Math.floor(vh * 0.20);
+    const sx = Math.floor(vw * 0.70);
+    const sy = Math.floor(vh * 0.05);
+    const ey = Math.floor(vh * 0.25);
+    const scanH = ey - sy;
+    const scanW = vw - sx;
     
-    const warmPixels = [];
+    // 第一步：行直方图 — 每行有多少暖色像素（找横向带）
+    const rowHist = new Uint32Array(scanH);
     for (let y = sy; y < ey; y++) {
-      for (let x = sx; x < ex; x++) {
+      for (let x = sx; x < vw; x++) {
         const idx = (y * vw + x) * 4;
-        const r = data[idx];
-        const g = data[idx+1];
-        const b = data[idx+2];
-        // 计时器背景：R远大于B（黄/橙/红/粉都是这样）
-        if (r > 120 && (r - b) > 60 && r > g * 0.6) {
-          warmPixels.push({x, y});
-        }
+        const r = data[idx], g = data[idx+1], b = data[idx+2];
+        if (r > 120 && (r - b) > 60 && r > g * 0.6) rowHist[y - sy]++;
       }
     }
     
-    if (warmPixels.length < 20) {
-      lastDebug = {err:'too few warm pixels', count: warmPixels.length, sx, ex, sy, ey};
-      return null;
+    // 找行直方图的峰值
+    let maxRowCount = 0, centerRow = 0;
+    for (let i = 0; i < scanH; i++) {
+      if (rowHist[i] > maxRowCount) { maxRowCount = rowHist[i]; centerRow = i; }
     }
+    if (maxRowCount < 5) { lastDebug = {err:'no warm rows'}; return null; }
     
-    // 用滑窗找最密集的矩形区域（计时器是纯色块，密度最高）
-    // 计时器典型尺寸：w≈12%~18%画面宽，h≈3%~6%画面高
-    const timerMinW = Math.floor(vw * 0.08);
-    const timerMaxW = Math.floor(vw * 0.20);
-    const timerMinH = Math.floor(vh * 0.02);
-    const timerMaxH = Math.floor(vh * 0.08);
-    const stepX = Math.floor(vw * 0.02);
-    const stepY = Math.floor(vh * 0.01);
+    // 行方向扩展：取所有>=峰值20%的行
+    const rowThresh = maxRowCount * 0.20;
+    let top = scanH, bottom = 0;
+    for (let i = 0; i < scanH; i++) {
+      if (rowHist[i] >= rowThresh) { if (i < top) top = i; if (i > bottom) bottom = i; }
+    }
+    if (top > bottom) { lastDebug = {err:'no warm rows after thresh'}; return null; }
     
-    // 建立像素网格加速查询
-    const pixelSet = new Set(warmPixels.map(p => `${p.x},${p.y}`));
+    const minY = sy + top, maxY = sy + bottom;
+    const rowH = maxY - minY + 1;
     
-    let bestRect = null;
-    let bestCount = 0;
-    
-    for (let ty = sy; ty < ey - timerMinH; ty += stepY) {
-      for (let tx = sx; tx < ex - timerMinW; tx += stepX) {
-        for (let tw = timerMinW; tw <= timerMaxW; tw += stepX) {
-          for (let th = timerMinH; th <= timerMaxH; th += stepY) {
-            let count = 0;
-            for (let py = ty; py < ty + th; py += 3) {
-              for (let px = tx; px < tx + tw; px += 3) {
-                if (pixelSet.has(`${px},${py}`)) count++;
-              }
-            }
-            const area = tw * th;
-            const density = count / (area / 9);
-            if (density > 0.4 && count > bestCount) {
-              bestCount = count;
-              bestRect = {minX: tx, maxX: tx + tw, minY: ty, maxY: ty + th};
-            }
-          }
-        }
+    // 第二步：在确定的行范围内，列直方图 — 找宽高比合理的横向矩形
+    const colHist = new Uint32Array(scanW);
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = sx; x < vw; x++) {
+        const idx = (y * vw + x) * 4;
+        const r = data[idx], g = data[idx+1], b = data[idx+2];
+        if (r > 120 && (r - b) > 60 && r > g * 0.6) colHist[x - sx]++;
       }
     }
     
-    if (!bestRect) {
-      lastDebug = {err:'no dense rect found', totalPixels: warmPixels.length};
-      return null;
+    // 列阈值：该列暖色像素 >= 行高25%（排除散点）
+    const colThresh = rowH * 0.25;
+    
+    // 收集所有连续列段
+    const segments = [];
+    let curRun = 0, curStart = 0;
+    for (let i = 0; i < scanW; i++) {
+      if (colHist[i] >= colThresh) {
+        if (curRun === 0) curStart = i;
+        curRun++;
+      } else {
+        if (curRun > 0) { segments.push({start: curStart, len: curRun}); curRun = 0; }
+      }
+    }
+    if (curRun > 0) segments.push({start: curStart, len: curRun});
+    
+    // 选暖色像素总量最大的段（矩形块自然得分最高，灯带/散点得分低）
+    let bestSeg = null, bestScore = 0;
+    for (const seg of segments) {
+      // score = 该段列直方图之和（暖色像素总量）
+      let sum = 0;
+      for (let i = seg.start; i < seg.start + seg.len; i++) sum += colHist[i];
+      if (sum > bestScore) { bestScore = sum; bestSeg = seg; }
     }
     
-    const {minX, maxX, minY, maxY} = bestRect;
-    const bW = maxX - minX;
-    const bH = maxY - minY;
-    lastDebug = {sx, ex, sy, ey, count: warmPixels.length, minX, maxX, minY, maxY, bW, bH, bestCount};
+    if (!bestSeg) { lastDebug = {err:'no valid segment', segments: segments.length}; return null; }
+    
+    const minX = sx + bestSeg.start, maxX = sx + bestSeg.start + bestSeg.len;
+    const bW = maxX - minX, bH = maxY - minY;
+    
+    // 白色文字检查：计时器内有白色数字，灯带没有
+    let whiteCount = 0, totalPixels = bW * bH;
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x < maxX; x++) {
+        const idx = (y * vw + x) * 4;
+        const r = data[idx], g = data[idx+1], b = data[idx+2];
+        // 白色像素：RGB都>200且接近相等
+        if (r > 200 && g > 200 && b > 200 && Math.abs(r - g) < 30 && Math.abs(r - b) < 30) {
+          whiteCount++;
+        }
+      }
+    }
+    const whiteRatio = whiteCount / totalPixels;
+    
+    lastDebug = {minX, maxX, minY, maxY, bW, bH, bestScore, whiteCount, whiteRatio: whiteRatio.toFixed(3)};
     console.log('findTimer debug:', lastDebug);
     
-    if (bW < vw*0.03 || bW > vw*0.20) return null;
-    if (bH < vh*0.008 || bH > vh*0.08) return null;
+    // 没有白色像素说明不是计时器（是灯带）
+    if (whiteCount < 10 || whiteRatio < 0.01) { lastDebug.err = 'no white text'; return null; }
     
-    // density用矩形内的像素数，不是总数
-    const area = bW * bH;
-    const density = bestCount / (area / 9);
-    if (density < 0.15) return null;
-    
-    return { minX, maxX, minY, maxY, count: bestCount, density };
+    return { minX, maxX, minY, maxY, count: bestScore };
   }
   
   const dur = video.duration;
-  // 固定采样点：20%, 40%, 60%, 80%
-  const sampleTimes = [0.2, 0.4, 0.6, 0.8].map(p => Math.floor(dur * p)).filter(t => t > 1 && t < dur - 1);
+  // 只采样2帧（速度优先），取密度最高的
+  const sampleTimes = [0.3, 0.7].map(p => Math.floor(dur * p)).filter(t => t > 1 && t < dur - 1);
   
   let bestResult = null;
-  let bestDensity = 0;
+  let bestCount = 0;
   
   for (const t of sampleTimes) {
     const imageData = await sampleFrame(t);
     if (!imageData) continue;
     const result = findTimer(imageData);
-    if (result && result.density > bestDensity) {
-      bestDensity = result.density;
+    if (result && result.count > bestCount) {
+      bestCount = result.count;
       bestResult = {...result, seekTime: t};
     }
-    if (bestDensity > 0.5) break;  // 足够高密度直接返回
+    if (bestCount > 100) break;
   }
   
   if (!bestResult) {
@@ -1050,9 +1049,8 @@ async function exportVideo() {
 
 // ===== 全部视频一键自动识别 =====
 async function autoDetectAll() {
-  for (const v of state.videos) {
-    await autoDetectRegion(v.id);
-  }
+  // 并行识别所有视频
+  await Promise.all(state.videos.map(v => autoDetectRegion(v.id)));
 }
 
 // ===== 重新选择视频（回到步骤1）=====
