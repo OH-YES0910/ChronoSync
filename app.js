@@ -649,14 +649,19 @@ function initSync() {
     </div>
   `;
   
-  // 加载所有视频并等待 ready
+  // 加载所有视频并等待 ready（带错误处理，移动端更稳健）
   const loadPromises = allVideos.map((v) => {
     return new Promise(resolve => {
       const video = document.getElementById(`syncvideo-${v.id}`);
+      if (!video) { resolve(); return; }
       video.src = v.url;
-      video.onloadeddata = () => resolve();
-      video.onerror = () => resolve(); // 加载失败也不阻塞
-      video.load();
+      video.preload = 'auto';
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+      video.onloadeddata = done;
+      video.onerror = () => { console.warn('视频加载失败:', v.name); done(); };
+      setTimeout(done, 15000); // 15秒超时，移动端网络慢
+      try { video.load(); } catch(e) { console.warn('video.load() 异常:', e); done(); }
     });
   });
   
@@ -741,21 +746,20 @@ function startSyncPlay() {
       if (baseVideo && !baseVideo.paused) {
         const baseTime = baseVideo.currentTime;
         
-        // 更新UI显示（只更新进度条，不碰任何视频属性）
-        if (Math.abs(baseTime - lastDisplayTime) >= 0.1) {
+        // 更新UI显示（降低频率：每0.5秒更新一次）
+        if (Math.abs(baseTime - lastDisplayTime) >= 0.5) {
           lastDisplayTime = baseTime;
           slider.value = baseTime;
           document.getElementById('timeDisplay').textContent = baseTime.toFixed(1) + 's';
           
-          // 同步其他视频到正确位置
+          // 同步其他视频到正确位置（只在偏差>1秒时seek，避免频繁seek卡顿）
           state.videos.forEach((v, i) => {
-            if (i === 0) return; // 跳过基准视频
+            if (i === 0) return;
             const video = document.getElementById(`syncvideo-${v.id}`);
             if (!video || video.paused) return;
             const offset = state.offsets[v.id] || 0;
             const targetTime = baseTime + offset;
-            // 如果偏差超过0.3秒，seek修正
-            if (Math.abs(video.currentTime - targetTime) > 0.3) {
+            if (Math.abs(video.currentTime - targetTime) > 1.0) {
               video.currentTime = Math.max(0, targetTime);
             }
           });
@@ -842,6 +846,9 @@ async function exportVideo() {
       canvas.width = vw * 2;
       canvas.height = vh * 2;
     } else if (layout === 'top2-bottom1' && validVideos.length === 3) {
+      canvas.width = vw * 2;
+      canvas.height = vh * 2;
+    } else if (layout === 'grid-4' && validVideos.length === 4) {
       canvas.width = vw * 2;
       canvas.height = vh * 2;
     } else {
@@ -943,6 +950,12 @@ async function exportVideo() {
         ctx.drawImage(exportVideos[0], 0, 0, vw, vh);
         ctx.drawImage(exportVideos[1], vw, 0, vw, vh);
         ctx.drawImage(exportVideos[2], vw * 0.5, vh, vw, vh);
+      } else if (layout === 'grid-4' && validVideos.length === 4) {
+        validVideos.forEach((v, i) => {
+          const vid = exportVideos[i];
+          const row = Math.floor(i / 2), col = i % 2;
+          ctx.drawImage(vid, col * vw, row * vh, vw, vh);
+        });
       } else {
         validVideos.forEach((v, i) => {
           const vid = exportVideos[i];
@@ -1199,10 +1212,15 @@ function generateLayoutThumbnails(count) {
     layouts.push({ id: 'horizontal', label: '横向', svg: generateLayoutSVG(count, 'horizontal') });
   }
   
-  // 上1下2（3个视频）
+  // 上1下2 / 上2下1（3个视频）
   if (count === 3) {
     layouts.push({ id: 'top1-bottom2', label: '上1下2', svg: generateLayoutSVG(3, 'top1-bottom2') });
     layouts.push({ id: 'top2-bottom1', label: '上2下1', svg: generateLayoutSVG(3, 'top2-bottom1') });
+  }
+  
+  // 2x2网格（4个视频）
+  if (count === 4) {
+    layouts.push({ id: 'grid-4', label: '2x2网格', svg: generateLayoutSVG(4, 'grid-4') });
   }
   
   return layouts.map((l, i) => `
@@ -1256,6 +1274,19 @@ function generateLayoutSVG(count, layout) {
     // 下面1个居中
     rects += `<rect x="${(w - slotW) / 2}" y="${halfH + gap}" width="${slotW}" height="${halfH}" rx="2" fill="#2eaa6f" opacity="0.8"/>`;
     rects += `<text x="${w/2}" y="${halfH + gap + halfH/2 + 3}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">3</text>`;
+  } else if (layout === 'grid-4') {
+    const slotW = (w - gap) / 2;
+    const slotH = (h - gap) / 2;
+    const colors = ['#ff6b35', '#4a9eff', '#2eaa6f', '#e74c3c'];
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 2; c++) {
+        const i = r * 2 + c;
+        const x = c * (slotW + gap) + 2;
+        const y = r * (slotH + gap) + 2;
+        rects += `<rect x="${x}" y="${y}" width="${slotW}" height="${slotH}" rx="2" fill="${colors[i]}" opacity="0.8"/>`;
+        rects += `<text x="${x + slotW/2}" y="${y + slotH/2 + 3}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">${i + 1}</text>`;
+      }
+    }
   }
   
   return `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
