@@ -33,11 +33,18 @@ body {
 
 /* ===== 头部 ===== */
 .app-header {
-  text-align: center;
   margin-bottom: 1.5rem;
 }
 
-.app-header h1 {
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.header-row h1 {
   font-size: 1.8rem;
   margin-bottom: 0.3rem;
 }
@@ -45,6 +52,11 @@ body {
 .subtitle {
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 /* ===== 步骤 ===== */
@@ -241,6 +253,7 @@ body {
   gap: 0.4rem;
   margin-top: 0.5rem;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .region-controls input[type="range"] {
@@ -261,6 +274,18 @@ body {
 .region-controls button:hover {
   background: var(--primary);
   border-color: var(--primary);
+  color: #fff;
+}
+
+.btn-auto-detect {
+  background: var(--primary) !important;
+  color: #fff !important;
+  border-color: var(--primary) !important;
+  font-weight: 600;
+}
+
+.btn-auto-detect:hover {
+  background: var(--primary-hover) !important;
 }
 
 .region-display {
@@ -594,6 +619,158 @@ body {
   border-radius: 6px;
   font-size: 0.85rem;
   color: var(--text-muted);
+}
+
+/* ===== 导出布局缩略图 ===== */
+.export-layout-grid {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.layout-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.5rem;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 80px;
+}
+
+.layout-thumb:hover {
+  border-color: var(--primary);
+  background: var(--bg);
+}
+
+.layout-thumb.selected {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.layout-thumb.selected .layout-label {
+  color: #fff;
+}
+
+.layout-svg {
+  width: 60px;
+  height: 40px;
+}
+
+.layout-svg svg {
+  width: 100%;
+  height: 100%;
+}
+
+.layout-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* ===== 导出顺序 ===== */
+.export-order {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.export-order label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+  display: block;
+}
+
+.export-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.export-order-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: grab;
+  transition: opacity 0.3s, transform 0.3s, background 0.2s, box-shadow 0.2s;
+}
+
+.export-order-item:active {
+  cursor: grabbing;
+}
+
+.export-order-item.dragging {
+  opacity: 0.5;
+  transform: scale(1.03);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  z-index: 10;
+}
+
+.export-order-item.drag-over {
+  border-top: 2px solid var(--accent, #f97316);
+}
+
+.export-order-item.just-swapped {
+  animation: swap-flash 0.4s ease;
+}
+
+@keyframes swap-flash {
+  0% { background: var(--accent, #f97316); transform: scale(1.05); }
+  100% { background: var(--bg); transform: scale(1); }
+}
+
+.export-order-item[draggable="true"]:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.05));
+}
+
+.drag-handle {
+  color: var(--text-muted);
+  font-size: 1rem;
+  user-select: none;
+}
+
+.export-order-item .order-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-order-item .order-num {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.order-btn {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-card);
+  cursor: pointer;
+  color: var(--text);
+  transition: all 0.15s;
+}
+
+.order-btn:hover:not(:disabled) {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.order-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 /* ===== 响应式 ===== */

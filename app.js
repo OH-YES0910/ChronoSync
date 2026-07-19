@@ -113,6 +113,9 @@ function goToStep(step) {
   document.querySelectorAll('.step').forEach(s => s.classList.add('hidden'));
   document.getElementById(`step${step}`).classList.remove('hidden');
   
+  // 显示/隐藏头部操作按钮
+  document.getElementById('headerActions').style.display = (step >= 2) ? 'flex' : 'none';
+  
   if (step === 2) initRegionSelection();
   if (step === 3) analyzeVideos();
 }
@@ -140,7 +143,6 @@ function initRegionSelection() {
       <div class="region-controls">
         <input type="range" id="seek-${v.id}" min="0" max="100" value="10">
         <button onclick="randomSeek('${v.id}')">🎲 随机</button>
-        <button onclick="autoRegion('${v.id}')">🎯 右上角</button>
       </div>
       <div class="region-display" id="display-${v.id}">未选择区域</div>
     </div>
@@ -272,6 +274,218 @@ function autoRegion(videoId) {
   updateButtons();
 }
 
+// ===== 自动识别计时器区域 =====
+// 参考截图分析：
+//   黄色背景: x≈80%~95%, y≈13%~18%（橙黄色块，R远大于B）
+//   红色背景: x≈82%~96%, y≈13%~18%（粉红色块，R远大于B）
+//   注意：顶部中间有橙色氮气条，限制x>72%排除它
+// 策略：多帧采样 → 右上角找R>>B色块 → 密度过滤 → 边界框
+async function autoDetectRegion(videoId) {
+  const video = document.getElementById(`video-${videoId}`);
+  const selector = document.getElementById(`selector-${videoId}`);
+  const box = document.getElementById(`box-${videoId}`);
+  const display = document.getElementById(`display-${videoId}`);
+  
+  if (!video || !video.videoWidth) return;
+  
+  display.textContent = '正在自动识别计时器...';
+  display.style.color = 'var(--text-muted)';
+  updateButtons();
+  
+  video.pause();
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  
+  // 调试：存储最后一次采样信息
+  let lastDebug = null;
+  
+  async function sampleFrame(targetTime) {
+    if (targetTime < 1) return null;
+    video.currentTime = targetTime;
+    await new Promise(resolve => {
+      const h = () => { video.removeEventListener('seeked', h); resolve(); };
+      video.addEventListener('seeked', h);
+      setTimeout(resolve, 3000);
+    });
+    if (Math.abs(video.currentTime - targetTime) > 1) { lastDebug = {err:'seek failed', actual: video.currentTime}; return null; }
+    try { await video.play(); await new Promise(r => setTimeout(r, 120)); video.pause(); } catch(e) {}
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    if (Math.abs(video.currentTime - targetTime) > 2) { lastDebug = {err:'drift', actual: video.currentTime}; return null; }
+    
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    canvas.width = vw; canvas.height = vh;
+    ctx.drawImage(video, 0, 0, vw, vh);
+    
+    // 采样多个位置的亮度
+    const samples = [
+      {name:'center', x: vw*0.5, y: vh*0.5},
+      {name:'timer85x15', x: vw*0.85, y: vh*0.15},
+      {name:'topRight', x: vw*0.9, y: vh*0.1}
+    ];
+    const pixelInfo = samples.map(s => {
+      const c = ctx.getImageData(Math.floor(s.x), Math.floor(s.y), 1, 1).data;
+      return {name:s.name, r:c[0], g:c[1], b:c[2], avg: Math.round((c[0]+c[1]+c[2])/3)};
+    });
+    lastDebug = {targetTime, samples: pixelInfo, vw, vh};
+    
+    const centerAvg = pixelInfo.find(p=>p.name==='center').avg;
+    if (centerAvg < 10) { lastDebug.err = 'black frame'; return null; }
+    return ctx.getImageData(0, 0, vw, vh);
+  }
+  
+  function findTimer(imageData) {
+    const data = imageData.data;
+    // 基于用户截图验证的精确范围：
+    // 黄色背景: x≈80%~95%, y≈13%~18%
+    // 红色背景: x≈82%~96%, y≈13%~18%
+    // 取交集+余量：x:78%~96%, y:10%~20%
+    const sx = Math.floor(vw * 0.78);
+    const ex = Math.floor(vw * 0.96);
+    const sy = Math.floor(vh * 0.10);
+    const ey = Math.floor(vh * 0.20);
+    
+    const warmPixels = [];
+    for (let y = sy; y < ey; y++) {
+      for (let x = sx; x < ex; x++) {
+        const idx = (y * vw + x) * 4;
+        const r = data[idx];
+        const g = data[idx+1];
+        const b = data[idx+2];
+        // 计时器背景：R远大于B（黄/橙/红/粉都是这样）
+        if (r > 120 && (r - b) > 60 && r > g * 0.6) {
+          warmPixels.push({x, y});
+        }
+      }
+    }
+    
+    if (warmPixels.length < 20) {
+      lastDebug = {err:'too few warm pixels', count: warmPixels.length, sx, ex, sy, ey};
+      return null;
+    }
+    
+    // 用滑窗找最密集的矩形区域（计时器是纯色块，密度最高）
+    // 计时器典型尺寸：w≈12%~18%画面宽，h≈3%~6%画面高
+    const timerMinW = Math.floor(vw * 0.08);
+    const timerMaxW = Math.floor(vw * 0.20);
+    const timerMinH = Math.floor(vh * 0.02);
+    const timerMaxH = Math.floor(vh * 0.08);
+    const stepX = Math.floor(vw * 0.02);
+    const stepY = Math.floor(vh * 0.01);
+    
+    // 建立像素网格加速查询
+    const pixelSet = new Set(warmPixels.map(p => `${p.x},${p.y}`));
+    
+    let bestRect = null;
+    let bestCount = 0;
+    
+    for (let ty = sy; ty < ey - timerMinH; ty += stepY) {
+      for (let tx = sx; tx < ex - timerMinW; tx += stepX) {
+        for (let tw = timerMinW; tw <= timerMaxW; tw += stepX) {
+          for (let th = timerMinH; th <= timerMaxH; th += stepY) {
+            let count = 0;
+            for (let py = ty; py < ty + th; py += 3) {
+              for (let px = tx; px < tx + tw; px += 3) {
+                if (pixelSet.has(`${px},${py}`)) count++;
+              }
+            }
+            const area = tw * th;
+            const density = count / (area / 9);
+            if (density > 0.4 && count > bestCount) {
+              bestCount = count;
+              bestRect = {minX: tx, maxX: tx + tw, minY: ty, maxY: ty + th};
+            }
+          }
+        }
+      }
+    }
+    
+    if (!bestRect) {
+      lastDebug = {err:'no dense rect found', totalPixels: warmPixels.length};
+      return null;
+    }
+    
+    const {minX, maxX, minY, maxY} = bestRect;
+    const bW = maxX - minX;
+    const bH = maxY - minY;
+    lastDebug = {sx, ex, sy, ey, count: warmPixels.length, minX, maxX, minY, maxY, bW, bH, bestCount};
+    console.log('findTimer debug:', lastDebug);
+    
+    if (bW < vw*0.03 || bW > vw*0.20) return null;
+    if (bH < vh*0.008 || bH > vh*0.08) return null;
+    
+    // density用矩形内的像素数，不是总数
+    const area = bW * bH;
+    const density = bestCount / (area / 9);
+    if (density < 0.15) return null;
+    
+    return { minX, maxX, minY, maxY, count: bestCount, density };
+  }
+  
+  const dur = video.duration;
+  // 固定采样点：20%, 40%, 60%, 80%
+  const sampleTimes = [0.2, 0.4, 0.6, 0.8].map(p => Math.floor(dur * p)).filter(t => t > 1 && t < dur - 1);
+  
+  let bestResult = null;
+  let bestDensity = 0;
+  
+  for (const t of sampleTimes) {
+    const imageData = await sampleFrame(t);
+    if (!imageData) continue;
+    const result = findTimer(imageData);
+    if (result && result.density > bestDensity) {
+      bestDensity = result.density;
+      bestResult = {...result, seekTime: t};
+    }
+    if (bestDensity > 0.5) break;  // 足够高密度直接返回
+  }
+  
+  if (!bestResult) {
+    console.log('autoDetectRegion debug:', lastDebug);
+    const debugStr = lastDebug ? JSON.stringify(lastDebug) : 'no debug';
+    display.textContent = `未检测到计时器(${debugStr})`;
+    display.style.color = 'var(--warning)';
+    updateButtons();
+    return;
+  }
+  
+  const {minX, maxX, minY, maxY, count, seekTime} = bestResult;
+  const tW=maxX-minX, tH=maxY-minY;
+  const padX = Math.max(Math.floor(tW*0.15), Math.floor(vw*0.003));
+  const padY = Math.max(Math.floor(tH*0.2), Math.floor(vh*0.002));
+  const fx=Math.max(0,minX-padX), fy=Math.max(0,minY-padY);
+  const fw=Math.min(vw,maxX+padX)-fx, fh=Math.min(vh,maxY+padY)-fy;
+  
+  // canvas像素坐标 → CSS selector百分比坐标（object-fit:contain映射）
+  const SELECTOR_ASPECT = 16/9;
+  const videoAspect = vw / vh;
+  let scaleX, scaleY, offsetX, offsetY;
+  if (videoAspect > SELECTOR_ASPECT) {
+    scaleX = 1; scaleY = SELECTOR_ASPECT / videoAspect;
+    offsetX = 0; offsetY = (1 - scaleY) / 2;
+  } else {
+    scaleY = 1; scaleX = videoAspect / SELECTOR_ASPECT;
+    offsetX = (1 - scaleX) / 2; offsetY = 0;
+  }
+  
+  const xPct = +(((fx / vw - offsetX) / scaleX) * 100).toFixed(1);
+  const yPct = +(((fy / vh - offsetY) / scaleY) * 100).toFixed(1);
+  const wPct = +((fw / vw / scaleX) * 100).toFixed(1);
+  const hPct = +((fh / vh / scaleY) * 100).toFixed(1);
+  
+  state.regions[videoId] = {x:xPct, y:yPct, w:wPct, h:hPct};
+  const sr = selector.getBoundingClientRect();
+  box.style.left=(sr.width*xPct/100)+'px';
+  box.style.top=(sr.height*yPct/100)+'px';
+  box.style.width=(sr.width*wPct/100)+'px';
+  box.style.height=(sr.height*hPct/100)+'px';
+  box.classList.add('active');
+  
+  display.textContent=`已识别: x=${xPct}% y=${yPct}% w=${wPct}% h=${hPct}% (${count}px @ t=${seekTime}s)`;
+  display.style.color='var(--success)';
+  updateButtons();
+}
+
 // ===== 进度条工具 =====
 function setProgress(container, percent, label) {
   container.innerHTML = `
@@ -302,32 +516,40 @@ async function analyzeVideos() {
       </div>
     </div>`;
   
-  for (let i = 0; i < state.videos.length; i++) {
-    const v = state.videos[i];
-    // 把回调传给 extractFrames，让它每完成一帧就更新同一根进度条
-    await extractFrames(v.id, (frameIdx) => {
-      completedFrames = i * 8 + frameIdx;
-      const percent = (completedFrames / totalFrames) * 100;
-      document.getElementById('analysisFill').style.width = percent + '%';
-      document.getElementById('analysisLabel').textContent = `正在OCR识别 ${v.name} 帧 ${frameIdx}/8`;
-    });
+  try {
+    for (let i = 0; i < state.videos.length; i++) {
+      const v = state.videos[i];
+      await extractFrames(v.id, (frameIdx) => {
+        completedFrames = i * 8 + frameIdx;
+        const percent = (completedFrames / totalFrames) * 85;
+        const fillEl = document.getElementById('analysisFill');
+        const labelEl = document.getElementById('analysisLabel');
+        if (fillEl) fillEl.style.width = percent + '%';
+        if (labelEl) labelEl.textContent = `正在OCR识别 ${v.name} 帧 ${frameIdx}/8`;
+      });
+    }
+    
+    // 最后一步：计算偏移（不使用 setProgress，避免覆盖进度条DOM）
+    const fillEl = document.getElementById('analysisFill');
+    const labelEl = document.getElementById('analysisLabel');
+    if (labelEl) labelEl.textContent = '正在计算偏移...';
+    if (fillEl) fillEl.style.width = '90%';
+    await calculateBestOffset();
+    if (fillEl) fillEl.style.width = '100%';
+    
+    // 构建各视频偏移显示
+    const offsetSummary = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2)
+      .map((v, i) => {
+        const offset = state.offsets[v.id] || 0;
+        return i === 0 ? `${v.name.replace(/\.[^.]+$/, '')}: 基准` : `${v.name.replace(/\.[^.]+$/, '')}: +${offset.toFixed(3)}s`;
+      }).join(' | ');
+    container.innerHTML = `<div class="done">分析完成！${offsetSummary}</div>`;
+    
+    initSync();
+  } catch (err) {
+    console.error('分析失败:', err);
+    container.innerHTML = `<div class="no-match">分析失败: ${err.message}</div>`;
   }
-  
-  // 最后一步：计算偏移
-  document.getElementById('analysisLabel').textContent = '正在计算偏移...';
-  document.getElementById('analysisFill').style.width = '95%';
-  await calculateBestOffset();
-  document.getElementById('analysisFill').style.width = '100%';
-  
-  // 构建各视频偏移显示
-  const offsetSummary = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2)
-    .map((v, i) => {
-      const offset = state.offsets[v.id] || 0;
-      return i === 0 ? `${v.name.replace(/\.[^.]+$/, '')}: 基准` : `${v.name.replace(/\.[^.]+$/, '')}: +${offset.toFixed(3)}s`;
-    }).join(' | ');
-  container.innerHTML = `<div class="done">分析完成！${offsetSummary}</div>`;
-  
-  initSync();
 }
 
 // ===== 步骤3: 同步对比 =====
@@ -365,8 +587,6 @@ function initSync() {
       </div>
       <div class="play-control">
         <button id="playBtn" onclick="toggleSyncPlay()">▶ 同步播放</button>
-        <button class="btn-action" onclick="reselectVideos()">🔄 重新选择</button>
-        <button class="btn-action" onclick="recalculate()">🔄 重新计算</button>
       </div>
       <div class="offset-display">${offsetInfo}</div>
     </div>
@@ -395,12 +615,18 @@ function initSync() {
     
     <div class="export-section">
       <h3>导出设置</h3>
+      
+      <div class="export-layout-grid" id="exportLayoutGrid">
+        ${generateLayoutThumbnails(allVideos.length)}
+      </div>
+      
       <div class="export-options">
         <div class="export-option">
-          <label>布局:</label>
-          <select id="exportLayout">
-            <option value="horizontal">横向排列</option>
-            <option value="vertical">竖向排列</option>
+          <label>画质:</label>
+          <select id="exportQuality">
+            <option value="sd">标清 (480p)</option>
+            <option value="hd">高清 (720p)</option>
+            <option value="original" selected>原画</option>
           </select>
         </div>
         <div class="export-option">
@@ -411,6 +637,19 @@ function initSync() {
           </select>
         </div>
         <button id="exportBtn" onclick="exportVideo()">📹 导出视频</button>
+      </div>
+      
+      <div class="export-order">
+        <label>视频顺序（拖拽调整）:</label>
+        <div id="exportOrderList" class="export-order-list">
+          ${allVideos.map((v, i) => `
+            <div class="export-order-item" draggable="true" data-idx="${i}">
+              <span class="drag-handle">⣿</span>
+              <span class="order-name">${v.name}</span>
+              <span class="order-num">#${i + 1}</span>
+            </div>
+          `).join('')}
+        </div>
       </div>
       <div id="exportProgress" class="export-progress" style="display:none;"></div>
     </div>
@@ -430,6 +669,7 @@ function initSync() {
   Promise.all(loadPromises).then(() => {
     // 全部加载完毕后再设置初始时间
     updateSyncFromSlider();
+    initDragAndDrop();
   });
   
   const slider = document.getElementById('timeSlider');
@@ -512,6 +752,19 @@ function startSyncPlay() {
           lastDisplayTime = baseTime;
           slider.value = baseTime;
           document.getElementById('timeDisplay').textContent = baseTime.toFixed(1) + 's';
+          
+          // 同步其他视频到正确位置
+          state.videos.forEach((v, i) => {
+            if (i === 0) return; // 跳过基准视频
+            const video = document.getElementById(`syncvideo-${v.id}`);
+            if (!video || video.paused) return;
+            const offset = state.offsets[v.id] || 0;
+            const targetTime = baseTime + offset;
+            // 如果偏差超过0.3秒，seek修正
+            if (Math.abs(video.currentTime - targetTime) > 0.3) {
+              video.currentTime = Math.max(0, targetTime);
+            }
+          });
         }
         
         if (baseTime >= maxTime) {
@@ -560,25 +813,45 @@ async function exportVideo() {
   if (state.isPlaying) pauseSyncPlay();
   
   try {
-    const validVideos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
+    const orderedVideos = getExportVideoOrder();
+    const validVideos = orderedVideos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
     if (validVideos.length < 2) throw new Error('视频不足');
     
-    const layout = document.getElementById('exportLayout').value;
+    const layout = state.selectedLayout || 'vertical';
     const wantMP4 = document.getElementById('exportFormat').value === 'mp4';
-    const fps = 30;
+    const quality = document.getElementById('exportQuality').value;
+    const fps = quality === 'sd' ? 24 : 30;
+    
+    // 画质设置
+    const qualityMap = {
+      sd: { scale: 0.5, bitrate: 2000000, crf: 28 },       // 480p
+      hd: { scale: 0.75, bitrate: 5000000, crf: 25 },      // 720p
+      original: { scale: 1.0, bitrate: 8000000, crf: 23 }  // 原画
+    };
+    const q = qualityMap[quality];
     
     // 创建离屏 canvas
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     
     const baseVideoEl = document.getElementById(`syncvideo-${validVideos[0].id}`);
-    const vw = baseVideoEl.videoWidth;
-    const vh = baseVideoEl.videoHeight;
+    const rawW = baseVideoEl.videoWidth;
+    const rawH = baseVideoEl.videoHeight;
+    const vw = Math.round(rawW * q.scale);
+    const vh = Math.round(rawH * q.scale);
     
+    // 根据布局计算canvas尺寸
     if (layout === 'horizontal') {
       canvas.width = vw * validVideos.length;
       canvas.height = vh;
+    } else if (layout === 'top1-bottom2' && validVideos.length === 3) {
+      canvas.width = vw * 2;
+      canvas.height = vh * 2;
+    } else if (layout === 'top2-bottom1' && validVideos.length === 3) {
+      canvas.width = vw * 2;
+      canvas.height = vh * 2;
     } else {
+      // vertical 或 2+4视频的默认
       canvas.width = vw;
       canvas.height = vh * validVideos.length;
     }
@@ -589,7 +862,7 @@ async function exportVideo() {
     
     const recorder = new MediaRecorder(stream, {
       mimeType: 'video/webm;codecs=vp9',
-      videoBitsPerSecond: 8000000
+      videoBitsPerSecond: q.bitrate
     });
     
     recorder.ondataavailable = (e) => {
@@ -634,8 +907,8 @@ async function exportVideo() {
       
       const time = exportStartTime + frameIdx * frameInterval;
       
-      if (frameIdx % 10 === 0) {
-        const progress = (frameIdx / totalFrames) * 80; // 录制占80%
+      if (frameIdx % (fps * 2) === 0) {
+        const progress = (frameIdx / totalFrames) * 80;
         progressEl.textContent = `录制进度: ${progress.toFixed(0)}% (帧 ${frameIdx}/${totalFrames})`;
       }
       
@@ -646,27 +919,45 @@ async function exportVideo() {
         const targetTime = Math.max(0, Math.min(v.duration - 0.01, time + offset));
         
         return new Promise(resolve => {
-          if (Math.abs(vid.currentTime - targetTime) < 0.001) {
+          if (Math.abs(vid.currentTime - targetTime) < 0.01) {
             resolve();
             return;
           }
           vid.currentTime = targetTime;
           vid.addEventListener('seeked', resolve, { once: true });
-          setTimeout(resolve, 200);
+          setTimeout(resolve, 500);
         });
       });
       
       await Promise.all(seekPromises);
       
-      // 绘制所有视频帧到 canvas
-      validVideos.forEach((v, i) => {
-        const vid = exportVideos[i];
-        if (layout === 'horizontal') {
+      // 清空canvas
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // 根据布局绘制所有视频帧到 canvas
+      if (layout === 'horizontal') {
+        validVideos.forEach((v, i) => {
+          const vid = exportVideos[i];
           ctx.drawImage(vid, i * vw, 0, vw, vh);
-        } else {
+        });
+      } else if (layout === 'top1-bottom2' && validVideos.length === 3) {
+        // 上面1个居中，下面2个
+        ctx.drawImage(exportVideos[0], vw * 0.5, 0, vw, vh);
+        ctx.drawImage(exportVideos[1], 0, vh, vw, vh);
+        ctx.drawImage(exportVideos[2], vw, vh, vw, vh);
+      } else if (layout === 'top2-bottom1' && validVideos.length === 3) {
+        // 上面2个，下面1个居中
+        ctx.drawImage(exportVideos[0], 0, 0, vw, vh);
+        ctx.drawImage(exportVideos[1], vw, 0, vw, vh);
+        ctx.drawImage(exportVideos[2], vw * 0.5, vh, vw, vh);
+      } else {
+        // vertical: 竖向排列
+        validVideos.forEach((v, i) => {
+          const vid = exportVideos[i];
           ctx.drawImage(vid, 0, i * vh, vw, vh);
-        }
-      });
+        });
+      }
       
       if (stream.requestFrame) {
         stream.requestFrame();
@@ -686,11 +977,9 @@ async function exportVideo() {
     let finalExt;
     
     if (wantMP4) {
-      // 尝试用 ffmpeg.wasm 将 WebM 转为 MP4
-      // file:// 下 Worker 被浏览器拦截，自动回退到 WebM
       let mp4Failed = false;
       try {
-        progressEl.textContent = '正在转换为 MP4 格式... (ffmpeg.wasm)';
+        progressEl.textContent = '正在转换为 MP4 格式...';
         
         const { FFmpeg } = FFmpegWASM;
         const ffmpeg = new FFmpeg();
@@ -700,28 +989,48 @@ async function exportVideo() {
           progressEl.textContent = `转换进度: ${total.toFixed(0)}%`;
         });
         
-        await ffmpeg.load({
-          coreURL: 'ffmpeg/ffmpeg-core.js',
-          wasmURL: 'ffmpeg/ffmpeg-core.wasm',
-          workerURL: 'ffmpeg/814.ffmpeg.js',
-        });
+        // 尝试本地文件，失败则用CDN
+        let loaded = false;
+        try {
+          await ffmpeg.load({
+            coreURL: 'ffmpeg/ffmpeg-core.js',
+            wasmURL: 'ffmpeg/ffmpeg-core.wasm',
+            workerURL: 'ffmpeg/814.ffmpeg.js',
+          });
+          loaded = true;
+        } catch (localErr) {
+          console.warn('本地ffmpeg加载失败，尝试CDN:', localErr);
+          progressEl.textContent = '正在从CDN加载转换器...';
+          await ffmpeg.load({
+            coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+            wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+          });
+          loaded = true;
+        }
         
-        const webmBlob = new Blob(chunks, { type: 'video/webm' });
-        const webmData = new Uint8Array(await webmBlob.arrayBuffer());
-        
-        await ffmpeg.writeFile('input.webm', webmData);
-        await ffmpeg.exec(['-i', 'input.webm', '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-y', 'output.mp4']);
-        
-        const mp4Data = await ffmpeg.readFile('output.mp4');
-        finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
-        finalExt = 'mp4';
-        
-        await ffmpeg.deleteFile('input.webm');
-        await ffmpeg.deleteFile('output.mp4');
-        ffmpeg.terminate();
+        if (loaded) {
+          const webmBlob = new Blob(chunks, { type: 'video/webm' });
+          const webmData = new Uint8Array(await webmBlob.arrayBuffer());
+          
+          await ffmpeg.writeFile('input.webm', webmData);
+          await ffmpeg.exec(['-i', 'input.webm', '-c:v', 'libx264', '-preset', 'fast', '-crf', q.crf, '-y', 'output.mp4']);
+          
+          const mp4Data = await ffmpeg.readFile('output.mp4');
+          finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
+          finalExt = 'mp4';
+          
+          await ffmpeg.deleteFile('input.webm');
+          await ffmpeg.deleteFile('output.mp4');
+          ffmpeg.terminate();
+        }
       } catch (ffmpegErr) {
         console.warn('ffmpeg.wasm 转换失败，回退到 WebM:', ffmpegErr);
         mp4Failed = true;
+        finalBlob = new Blob(chunks, { type: 'video/webm' });
+        finalExt = 'webm';
+      }
+      
+      if (mp4Failed) {
         finalBlob = new Blob(chunks, { type: 'video/webm' });
         finalExt = 'webm';
       }
@@ -734,12 +1043,13 @@ async function exportVideo() {
     const url = URL.createObjectURL(finalBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `对比视频_${layout === 'horizontal' ? '横向' : '竖向'}_${new Date().toISOString().slice(0, 10)}.${finalExt}`;
+    const layoutName = { horizontal: '横向', vertical: '竖向', 'top1-bottom2': '上1下2', 'top2-bottom1': '上2下1' }[layout] || layout;
+    a.download = `对比视频_${layoutName}_${new Date().toISOString().slice(0, 10)}.${finalExt}`;
     a.click();
     URL.revokeObjectURL(url);
     
-    if (wantMP4 && mp4Failed) {
-      progressEl.textContent = '✅ 导出完成 (WebM 格式，file:// 下无法转 MP4，部署到 GitHub Pages 后可导出 MP4)';
+    if (wantMP4 && finalExt !== 'mp4') {
+      progressEl.textContent = '✅ 导出完成 (MP4转换失败，已导出为 WebM 格式，可用在线工具转为 MP4)';
     } else {
       progressEl.textContent = `✅ 导出完成 (${finalExt.toUpperCase()} 格式)`;
     }
@@ -750,14 +1060,17 @@ async function exportVideo() {
     
   } catch (err) {
     console.error('导出失败:', err);
-    let errMsg = err.message;
-    if (err.message.includes('Worker') || err.message.includes('null')) {
-      errMsg = '需要通过HTTP服务器访问本页面才能使用MP4导出。\n\n本地运行方法:\n1. 安装 Node.js 后运行: npx serve public\n2. 或 Python: cd public && python -m http.server 8000\n3. 然后访问 http://localhost:8000';
-    }
-    progressEl.textContent = '导出失败: ' + errMsg;
+    progressEl.textContent = '导出失败: ' + err.message;
     exportBtn.disabled = false;
     exportBtn.textContent = '📹 导出视频';
     state.exporting = false;
+  }
+}
+
+// ===== 全部视频一键自动识别 =====
+async function autoDetectAll() {
+  for (const v of state.videos) {
+    await autoDetectRegion(v.id);
   }
 }
 
@@ -773,11 +1086,217 @@ function reselectVideos() {
   });
   state.videos = [];
   state.bestOffset = 0;
+  state.exportOrder = [];
   document.getElementById('comparisonArea').innerHTML = '';
   document.getElementById('analysisResult').innerHTML = '';
   document.getElementById('videoList').innerHTML = '';
   document.getElementById('nextBtn1').disabled = true;
+  document.getElementById('headerActions').style.display = 'none';
   goToStep(1);
+}
+
+// ===== 导出顺序调整 =====
+function moveExportOrder(idx, dir) {
+  const items = document.querySelectorAll('#exportOrderList .export-order-item');
+  const newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= items.length) return;
+  
+  const list = document.getElementById('exportOrderList');
+  const item = items[idx];
+  const ref = dir > 0 ? items[newIdx].nextSibling : items[newIdx];
+  list.insertBefore(item, ref);
+  
+  // 更新按钮状态和序号
+  const updated = document.querySelectorAll('#exportOrderList .export-order-item');
+  updated.forEach((el, i) => {
+    el.querySelectorAll('button')[0].disabled = (i === 0);
+    el.querySelectorAll('button')[1].disabled = (i === updated.length - 1);
+    el.querySelector('.order-num').textContent = '#' + (i + 1);
+  });
+}
+
+// ===== 拖拽排序 =====
+function initDragAndDrop() {
+  const list = document.getElementById('exportOrderList');
+  if (!list) return;
+  
+  let dragIdx = null;
+  let lastOverIdx = null;
+  
+  list.addEventListener('dragstart', (e) => {
+    const item = e.target.closest('.export-order-item');
+    if (!item) return;
+    dragIdx = parseInt(item.dataset.idx);
+    item.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    // 延迟设置透明度，让浏览器截取到正常外观作为拖拽图标
+    setTimeout(() => item.classList.add('dragging'), 0);
+  });
+  
+  list.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    
+    const items = Array.from(list.querySelectorAll('.export-order-item'));
+    // 找到鼠标下方的项（用元素中心点判断）
+    let overIdx = null;
+    for (const item of items) {
+      const rect = item.getBoundingClientRect();
+      const midY = rect.top + rect.height / 2;
+      if (e.clientY < midY) {
+        overIdx = parseInt(item.dataset.idx);
+        break;
+      }
+    }
+    if (overIdx === null) overIdx = items.length - 1;
+    
+    // 只在变化时更新样式
+    if (overIdx !== lastOverIdx) {
+      items.forEach(el => el.classList.remove('drag-over'));
+      if (overIdx !== dragIdx && items[overIdx]) {
+        items[overIdx].classList.add('drag-over');
+      }
+      lastOverIdx = overIdx;
+    }
+  });
+  
+  list.addEventListener('dragleave', (e) => {
+    // 只在真正离开列表时清除
+    if (!list.contains(e.relatedTarget)) {
+      list.querySelectorAll('.export-order-item').forEach(el => el.classList.remove('drag-over'));
+      lastOverIdx = null;
+    }
+  });
+  
+  list.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (dragIdx === null || lastOverIdx === null || dragIdx === lastOverIdx) {
+      cleanup();
+      return;
+    }
+    
+    // 重新排列state.videos
+    const [moved] = state.videos.splice(dragIdx, 1);
+    state.videos.splice(lastOverIdx, 0, moved);
+    
+    // 重新渲染列表
+    list.innerHTML = state.videos.map((v, i) => `
+      <div class="export-order-item" draggable="true" data-idx="${i}">
+        <span class="drag-handle">⣿</span>
+        <span class="order-name">${v.name}</span>
+        <span class="order-num">#${i + 1}</span>
+      </div>
+    `).join('');
+    
+    // 给被交换的项加闪烁动画
+    const newItems = list.querySelectorAll('.export-order-item');
+    if (newItems[lastOverIdx]) {
+      newItems[lastOverIdx].classList.add('just-swapped');
+      setTimeout(() => newItems[lastOverIdx]?.classList.remove('just-swapped'), 400);
+    }
+    
+    cleanup();
+  });
+  
+  function cleanup() {
+    list.querySelectorAll('.export-order-item').forEach(el => {
+      el.classList.remove('dragging', 'drag-over');
+    });
+    dragIdx = null;
+    lastOverIdx = null;
+  }
+  
+  list.addEventListener('dragend', cleanup);
+}
+
+// ===== 获取导出视频顺序 =====
+function getExportVideoOrder() {
+  const items = document.querySelectorAll('#exportOrderList .export-order-item');
+  if (items.length === 0) return state.videos;
+  const ids = Array.from(items).map(el => parseInt(el.dataset.idx));
+  return ids.map(i => state.videos[i]);
+}
+
+// ===== 生成布局缩略图 =====
+function generateLayoutThumbnails(count) {
+  const layouts = [];
+  
+  // 竖向排列（所有数量都有）
+  layouts.push({ id: 'vertical', label: '竖向', svg: generateLayoutSVG(count, 'vertical') });
+  
+  // 横向排列（2+个视频）
+  if (count >= 2) {
+    layouts.push({ id: 'horizontal', label: '横向', svg: generateLayoutSVG(count, 'horizontal') });
+  }
+  
+  // 上1下2（3个视频）
+  if (count === 3) {
+    layouts.push({ id: 'top1-bottom2', label: '上1下2', svg: generateLayoutSVG(3, 'top1-bottom2') });
+    layouts.push({ id: 'top2-bottom1', label: '上2下1', svg: generateLayoutSVG(3, 'top2-bottom1') });
+  }
+  
+  return layouts.map((l, i) => `
+    <div class="layout-thumb ${i === 0 ? 'selected' : ''}" data-layout="${l.id}" onclick="selectLayout('${l.id}')">
+      <div class="layout-svg">${l.svg}</div>
+      <span class="layout-label">${l.label}</span>
+    </div>
+  `).join('');
+}
+
+// ===== 生成布局SVG =====
+function generateLayoutSVG(count, layout) {
+  const w = 60, h = 40;
+  const gap = 2;
+  let rects = '';
+  
+  if (layout === 'vertical') {
+    const slotH = (h - gap * (count - 1)) / count;
+    for (let i = 0; i < count; i++) {
+      const y = i * (slotH + gap);
+      rects += `<rect x="2" y="${y}" width="${w - 4}" height="${slotH}" rx="2" fill="#${['ff6b35','4a9eff','2eaa6f','e74c3c'][i]}" opacity="0.8"/>`;
+      rects += `<text x="${w/2}" y="${y + slotH/2 + 3}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">${i + 1}</text>`;
+    }
+  } else if (layout === 'horizontal') {
+    const slotW = (w - gap * (count - 1)) / count;
+    for (let i = 0; i < count; i++) {
+      const x = i * (slotW + gap);
+      rects += `<rect x="${x}" y="2" width="${slotW}" height="${h - 4}" rx="2" fill="#${['ff6b35','4a9eff','2eaa6f','e74c3c'][i]}" opacity="0.8"/>`;
+      rects += `<text x="${x + slotW/2}" y="${h/2 + 3}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">${i + 1}</text>`;
+    }
+  } else if (layout === 'top1-bottom2') {
+    const slotW = (w - gap) / 2;
+    const topSlotH = (h - gap) / 2;
+    const botSlotH = topSlotH;
+    // 上面1个居中
+    rects += `<rect x="${(w - slotW) / 2}" y="2" width="${slotW}" height="${topSlotH}" rx="2" fill="#ff6b35" opacity="0.8"/>`;
+    rects += `<text x="${w/2}" y="${topSlotH/2 + 5}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">1</text>`;
+    // 下面2个
+    rects += `<rect x="2" y="${topSlotH + gap}" width="${slotW}" height="${botSlotH}" rx="2" fill="#4a9eff" opacity="0.8"/>`;
+    rects += `<text x="${slotW/2 + 2}" y="${topSlotH + gap + botSlotH/2 + 3}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">2</text>`;
+    rects += `<rect x="${slotW + gap + 2}" y="${topSlotH + gap}" width="${slotW}" height="${botSlotH}" rx="2" fill="#2eaa6f" opacity="0.8"/>`;
+    rects += `<text x="${slotW + gap + 2 + slotW/2}" y="${topSlotH + gap + botSlotH/2 + 3}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">3</text>`;
+  } else if (layout === 'top2-bottom1') {
+    const slotW = (w - gap) / 2;
+    const halfH = (h - gap) / 2;
+    // 上面2个
+    rects += `<rect x="2" y="2" width="${slotW}" height="${halfH}" rx="2" fill="#ff6b35" opacity="0.8"/>`;
+    rects += `<text x="${slotW/2 + 2}" y="${halfH/2 + 5}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">1</text>`;
+    rects += `<rect x="${slotW + gap + 2}" y="2" width="${slotW}" height="${halfH}" rx="2" fill="#4a9eff" opacity="0.8"/>`;
+    rects += `<text x="${slotW + gap + 2 + slotW/2}" y="${halfH/2 + 5}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">2</text>`;
+    // 下面1个居中
+    rects += `<rect x="${(w - slotW) / 2}" y="${halfH + gap}" width="${slotW}" height="${halfH}" rx="2" fill="#2eaa6f" opacity="0.8"/>`;
+    rects += `<text x="${w/2}" y="${halfH + gap + halfH/2 + 3}" text-anchor="middle" fill="#fff" font-size="7" font-weight="bold">3</text>`;
+  }
+  
+  return `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
+}
+
+// ===== 选择布局 =====
+function selectLayout(layoutId) {
+  document.querySelectorAll('.layout-thumb').forEach(el => el.classList.remove('selected'));
+  document.querySelector(`.layout-thumb[data-layout="${layoutId}"]`).classList.add('selected');
+  // 存到一个隐藏input或者直接存在state里
+  state.selectedLayout = layoutId;
 }
 
 // ===== 重新计算（保留视频和区域，重新OCR分析）=====
@@ -871,19 +1390,16 @@ async function readTimerValue(video, region) {
   const vh = video.videoHeight;
   
   // 计算 object-fit: contain 在 16:9 selector 中的实际映射
-  // selector 是 16:9，视频可能不是，contain 会居中显示
   const SELECTOR_ASPECT = 16/9;
   const videoAspect = vw / vh;
   
   let scaleX, scaleY, offsetX, offsetY;
   if (videoAspect > SELECTOR_ASPECT) {
-    // 视频更宽：填满宽度，上下居中
     scaleX = 1;
     scaleY = SELECTOR_ASPECT / videoAspect;
     offsetX = 0;
     offsetY = (1 - scaleY) / 2;
   } else {
-    // 视频更窄（如 Asphalt 9 的 3200×2136）：填满高度，左右居中
     scaleY = 1;
     scaleX = videoAspect / SELECTOR_ASPECT;
     offsetX = (1 - scaleX) / 2;
@@ -896,20 +1412,17 @@ async function readTimerValue(video, region) {
   const videoW = (region.w / 100) / scaleX * vw;
   const videoH = (region.h / 100) / scaleY * vh;
   
-  // 裁剪到有效范围
   const rx = Math.max(0, Math.min(videoX, vw));
   const ry = Math.max(0, Math.min(videoY, vh));
   const rw = Math.max(1, Math.min(videoW, vw - rx));
   const rh = Math.max(1, Math.min(videoH, vh - ry));
   
-  // 参考FrameSync：640x144 画布，不做预处理
   const canvas = document.createElement('canvas');
   canvas.width = 640;
   canvas.height = 144;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(video, rx, ry, rw, rh, 0, 0, 640, 144);
   
-  // 参考FrameSync：直接用 worker.recognize
   try {
     const { data } = await OCR.worker.recognize(canvas);
     const text = (data.text || '').trim();
@@ -1066,9 +1579,6 @@ async function calculateBestOffset() {
   const videos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2);
   if (videos.length < 2) return;
   
-  const container = document.getElementById('analysisResult');
-  setProgress(container, 85, '正在计算偏移...');
-  
   console.log('[calculateBestOffset] Videos with calibration:', videos.length);
   
   const base = videos[0];
@@ -1147,7 +1657,7 @@ async function calculateBestOffset() {
     }
   }
   
-  setProgress(container, 100, '完成');
+  console.log('[calculateBestOffset] Done');
 }
 
 // ===== 工具函数 =====
