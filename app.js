@@ -252,28 +252,6 @@ function randomSeek(videoId) {
   slider.value = (time / video.duration) * 100;
 }
 
-// ===== 自动区域（参考FrameSync：右上角 82%×8%） =====
-function autoRegion(videoId) {
-  const selector = document.getElementById(`selector-${videoId}`);
-  const box = document.getElementById(`box-${videoId}`);
-  const display = document.getElementById(`display-${videoId}`);
-  
-  const rect = selector.getBoundingClientRect();
-  
-  // 参考FrameSync：右上角82%×8%，不框中文
-  state.regions[videoId] = { x: 82, y: 8, w: 16, h: 8 };
-  
-  box.style.left = (rect.width * 0.82) + 'px';
-  box.style.top = (rect.height * 0.08) + 'px';
-  box.style.width = (rect.width * 0.16) + 'px';
-  box.style.height = (rect.height * 0.08) + 'px';
-  box.classList.add('active');
-  
-  display.textContent = 'x=82% y=8% w=16% h=8% (计时器区域)';
-  display.style.color = 'var(--success)';
-  updateButtons();
-}
-
 // ===== 自动识别计时器区域 =====
 // 参考截图分析：
 //   黄色背景: x≈80%~95%, y≈13%~18%（橙黄色块，R远大于B）
@@ -308,7 +286,9 @@ async function autoDetectRegion(videoId) {
       setTimeout(resolve, 3000);
     });
     if (Math.abs(video.currentTime - targetTime) > 1) { lastDebug = {err:'seek failed', actual: video.currentTime}; return null; }
-    try { await video.play(); await new Promise(r => setTimeout(r, 120)); video.pause(); } catch(e) {}
+    try { await video.play(); } catch(e) { lastDebug = {err:'play failed', msg: e.message}; return null; }
+    await new Promise(r => setTimeout(r, 120));
+    video.pause();
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     if (Math.abs(video.currentTime - targetTime) > 2) { lastDebug = {err:'drift', actual: video.currentTime}; return null; }
     
@@ -468,10 +448,11 @@ async function autoDetectRegion(videoId) {
     offsetX = (1 - scaleX) / 2; offsetY = 0;
   }
   
-  const xPct = +(((fx / vw - offsetX) / scaleX) * 100).toFixed(1);
-  const yPct = +(((fy / vh - offsetY) / scaleY) * 100).toFixed(1);
-  const wPct = +((fw / vw / scaleX) * 100).toFixed(1);
-  const hPct = +((fh / vh / scaleY) * 100).toFixed(1);
+  // 正确的 object-fit:contain 前向映射：CSS = (offset + pixel/total * scale) * 100
+  const xPct = +((offsetX + fx / vw * scaleX) * 100).toFixed(1);
+  const yPct = +((offsetY + fy / vh * scaleY) * 100).toFixed(1);
+  const wPct = +((fw / vw * scaleX) * 100).toFixed(1);
+  const hPct = +((fh / vh * scaleY) * 100).toFixed(1);
   
   state.regions[videoId] = {x:xPct, y:yPct, w:wPct, h:hPct};
   const sr = selector.getBoundingClientRect();
@@ -1093,26 +1074,6 @@ function reselectVideos() {
   document.getElementById('nextBtn1').disabled = true;
   document.getElementById('headerActions').style.display = 'none';
   goToStep(1);
-}
-
-// ===== 导出顺序调整 =====
-function moveExportOrder(idx, dir) {
-  const items = document.querySelectorAll('#exportOrderList .export-order-item');
-  const newIdx = idx + dir;
-  if (newIdx < 0 || newIdx >= items.length) return;
-  
-  const list = document.getElementById('exportOrderList');
-  const item = items[idx];
-  const ref = dir > 0 ? items[newIdx].nextSibling : items[newIdx];
-  list.insertBefore(item, ref);
-  
-  // 更新按钮状态和序号
-  const updated = document.querySelectorAll('#exportOrderList .export-order-item');
-  updated.forEach((el, i) => {
-    el.querySelectorAll('button')[0].disabled = (i === 0);
-    el.querySelectorAll('button')[1].disabled = (i === updated.length - 1);
-    el.querySelector('.order-num').textContent = '#' + (i + 1);
-  });
 }
 
 // ===== 拖拽排序 =====
