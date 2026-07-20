@@ -667,23 +667,21 @@ function initSync() {
     </div>
   `;
   
-  // 加载所有视频并等待 ready（带错误处理，移动端更稳健）
-  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-  const loadPromises = allVideos.map((v, idx) => {
-    return new Promise(resolve => {
-      const video = document.getElementById(`syncvideo-${v.id}`);
-      if (!video) { resolve(); return; }
-      video.src = v.url;
-      // 移动端：只加载metadata避免内存爆炸；桌面端加载auto
-      video.preload = isMobile ? 'metadata' : 'auto';
-      let settled = false;
-      const done = () => { if (!settled) { settled = true; resolve(); } };
-      video.onloadeddata = done;
-      video.onerror = () => { console.warn('视频加载失败:', v.name); done(); };
-      setTimeout(done, isMobile ? 8000 : 15000); // 移动端超时更短
-      try { video.load(); } catch(e) { console.warn('video.load() 异常:', e); done(); }
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    const loadPromises = allVideos.map((v, idx) => {
+      return new Promise(resolve => {
+        const video = document.getElementById(`syncvideo-${v.id}`);
+        if (!video) { resolve(); return; }
+        video.src = v.url;
+        video.preload = 'auto';
+        let settled = false;
+        const done = () => { if (!settled) { settled = true; resolve(); } };
+        video.onloadeddata = done;
+        video.onerror = () => { console.warn('视频加载失败:', v.name); done(); };
+        setTimeout(done, 15000);
+        try { video.load(); } catch(e) { console.warn('video.load() 异常:', e); done(); }
+      });
     });
-  });
   
   Promise.all(loadPromises).then(() => {
     // 全部加载完毕后再设置初始时间
@@ -899,7 +897,6 @@ async function exportVideo() {
     const validVideos = orderedVideos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
     if (validVideos.length < 2) throw new Error('视频不足');
 
-    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
     const layout = state.selectedLayout || 'vertical';
     const wantMP4 = document.getElementById('exportFormat').value === 'mp4';
     const quality = document.getElementById('exportQuality').value;
@@ -949,11 +946,10 @@ async function exportVideo() {
 
     progressEl.textContent = `画布: ${canvas.width}x${canvas.height} @ ${fps}fps (源${detectedFps.toFixed(0)}fps), 并行加载...`;
 
-    // 并行加载所有视频（移动端用metadata避免内存问题）
+    // 并行加载所有视频
     const exportVideos = await Promise.all(validVideos.map(async (v) => {
       const vid = document.createElement('video');
-      vid.src = v.url; vid.muted = true;
-      vid.preload = isMobile ? 'metadata' : 'auto';
+      vid.src = v.url; vid.muted = true; vid.preload = 'auto';
       await new Promise((resolve, reject) => {
         vid.addEventListener('loadeddata', resolve);
         vid.addEventListener('error', () => reject(new Error(`视频加载失败: ${v.name}`)));
@@ -1557,6 +1553,8 @@ async function readTimerValue(video, region) {
   
   try {
     const { data } = await OCR.worker.recognize(canvas);
+    // 清理canvas
+    canvas.width = 0; canvas.height = 0;
     const text = (data.text || '').trim();
     const confidence = (data.confidence || 0) / 100;
     const value = parseTimerText(text);
@@ -1704,6 +1702,10 @@ async function extractFrames(videoId, onFrameDone) {
   }
   
   console.log('[extractFrames] Done for', v.name, `calibPoints=${calibPoints.length}`);
+  
+  // 清理临时video元素，释放内存
+  video.src = '';
+  video.load();
   
   // 存储校准点
   state.frames[videoId] = calibPoints;
