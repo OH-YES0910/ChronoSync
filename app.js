@@ -668,17 +668,19 @@ function initSync() {
   `;
   
   // 加载所有视频并等待 ready（带错误处理，移动端更稳健）
-  const loadPromises = allVideos.map((v) => {
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const loadPromises = allVideos.map((v, idx) => {
     return new Promise(resolve => {
       const video = document.getElementById(`syncvideo-${v.id}`);
       if (!video) { resolve(); return; }
       video.src = v.url;
-      video.preload = 'auto';
+      // 移动端：只加载metadata避免内存爆炸；桌面端加载auto
+      video.preload = isMobile ? 'metadata' : 'auto';
       let settled = false;
       const done = () => { if (!settled) { settled = true; resolve(); } };
       video.onloadeddata = done;
       video.onerror = () => { console.warn('视频加载失败:', v.name); done(); };
-      setTimeout(done, 15000); // 15秒超时，移动端网络慢
+      setTimeout(done, isMobile ? 8000 : 15000); // 移动端超时更短
       try { video.load(); } catch(e) { console.warn('video.load() 异常:', e); done(); }
     });
   });
@@ -897,45 +899,15 @@ async function exportVideo() {
     const validVideos = orderedVideos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
     if (validVideos.length < 2) throw new Error('视频不足');
 
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
     const layout = state.selectedLayout || 'vertical';
     const wantMP4 = document.getElementById('exportFormat').value === 'mp4';
     const quality = document.getElementById('exportQuality').value;
 
     // ===== 自动检测帧率 =====
-    // 方法1: requestVideoFrameCallback测量（最准但需要播放）
-    // 方法2: 从视频元数据的duration和totalByteLength估算
-    // 方法3: 用已知帧数/时长（OCR采样率太低不可靠）
-    let detectedFps = 0;
-
-    // 尝试从第一个视频用requestVideoFrameCallback快速测量帧率
-    // 在极短时间内（~0.5s）统计回调次数
-    const probeVid = document.getElementById(`syncvideo-${validVideos[0].id}`);
-    if (probeVid && probeVid.readyState >= 2) {
-      try {
-        detectedFps = await new Promise((resolve) => {
-          let count = 0;
-          const start = performance.now();
-          const timeout = setTimeout(() => {
-            probeVid.pause();
-            const elapsed = (performance.now() - start) / 1000;
-            resolve(elapsed > 0 ? count / elapsed : 0);
-          }, 600);
-          const onFrame = () => {
-            count++;
-            if (count < 500) probeVid.requestVideoFrameCallback(onFrame);
-          };
-          probeVid.requestVideoFrameCallback(onFrame);
-          probeVid.play().catch(() => {});
-        });
-      } catch (e) {}
-    }
-
-    // 回退：从帧数/时长推算（但这只是OCR采样率，通常~20fps，不可靠）
-    if (detectedFps < 24 || detectedFps > 240) {
-      // 默认120fps（用户确认Asphalt 9录屏通常是120fps）
-      detectedFps = 120;
-    }
-    // SD降帧率到30，HD/原画保持源帧率
+    // 直接默认120fps（用户确认Asphalt 9录屏通常是120fps）
+    // 不做requestVideoFrameCallback探测（移动端会play()导致内存问题）
+    let detectedFps = 120;
     const fps = quality === 'sd' ? Math.min(30, Math.round(detectedFps)) : Math.round(detectedFps);
 
     const qualityMap = {
@@ -977,10 +949,11 @@ async function exportVideo() {
 
     progressEl.textContent = `画布: ${canvas.width}x${canvas.height} @ ${fps}fps (源${detectedFps.toFixed(0)}fps), 并行加载...`;
 
-    // 并行加载所有视频
+    // 并行加载所有视频（移动端用metadata避免内存问题）
     const exportVideos = await Promise.all(validVideos.map(async (v) => {
       const vid = document.createElement('video');
-      vid.src = v.url; vid.muted = true; vid.preload = 'auto';
+      vid.src = v.url; vid.muted = true;
+      vid.preload = isMobile ? 'metadata' : 'auto';
       await new Promise((resolve, reject) => {
         vid.addEventListener('loadeddata', resolve);
         vid.addEventListener('error', () => reject(new Error(`视频加载失败: ${v.name}`)));
