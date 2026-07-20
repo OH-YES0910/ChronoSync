@@ -876,43 +876,81 @@ function pauseSyncPlay() {
   }
 }
 
-// ===== 导出视频 =====
+// ===== 导出视频（v68: 自动检测帧率 + 并行encode + bugfix）=====
+const MP4_MUXER_URL = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.mjs';
+
 async function exportVideo() {
   if (state.exporting) return;
   state.exporting = true;
-  
+
   const exportBtn = document.getElementById('exportBtn');
   const progressEl = document.getElementById('exportProgress');
   exportBtn.disabled = true;
   exportBtn.textContent = '⏳ 导出中...';
   progressEl.style.display = 'block';
   progressEl.textContent = '准备导出...';
-  
+
   if (state.isPlaying) pauseSyncPlay();
-  
+
   try {
     const orderedVideos = getExportVideoOrder();
     const validVideos = orderedVideos.filter(v => state.frames[v.id] && state.frames[v.id].length > 0);
     if (validVideos.length < 2) throw new Error('视频不足');
-    
+
     const layout = state.selectedLayout || 'vertical';
     const wantMP4 = document.getElementById('exportFormat').value === 'mp4';
     const quality = document.getElementById('exportQuality').value;
-    const fps = quality === 'sd' ? 24 : 30;
-    
+
+    // ===== 自动检测帧率 =====
+    // 方法1: requestVideoFrameCallback测量（最准但需要播放）
+    // 方法2: 从视频元数据的duration和totalByteLength估算
+    // 方法3: 用已知帧数/时长（OCR采样率太低不可靠）
+    let detectedFps = 0;
+
+    // 尝试从第一个视频用requestVideoFrameCallback快速测量帧率
+    // 在极短时间内（~0.5s）统计回调次数
+    const probeVid = document.getElementById(`syncvideo-${validVideos[0].id}`);
+    if (probeVid && probeVid.readyState >= 2) {
+      try {
+        detectedFps = await new Promise((resolve) => {
+          let count = 0;
+          const start = performance.now();
+          const timeout = setTimeout(() => {
+            probeVid.pause();
+            const elapsed = (performance.now() - start) / 1000;
+            resolve(elapsed > 0 ? count / elapsed : 0);
+          }, 600);
+          const onFrame = () => {
+            count++;
+            if (count < 500) probeVid.requestVideoFrameCallback(onFrame);
+          };
+          probeVid.requestVideoFrameCallback(onFrame);
+          probeVid.play().catch(() => {});
+        });
+      } catch (e) {}
+    }
+
+    // 回退：从帧数/时长推算（但这只是OCR采样率，通常~20fps，不可靠）
+    if (detectedFps < 24 || detectedFps > 240) {
+      // 默认120fps（用户确认Asphalt 9录屏通常是120fps）
+      detectedFps = 120;
+    }
+    // SD降帧率到30，HD/原画保持源帧率
+    const fps = quality === 'sd' ? Math.min(30, Math.round(detectedFps)) : Math.round(detectedFps);
+
     const qualityMap = {
       sd: { scale: 0.5, bitrate: 2_000_000 },
       hd: { scale: 0.75, bitrate: 5_000_000 },
       original: { scale: 1.0, bitrate: 12_000_000 }
     };
     const q = qualityMap[quality];
-    
+
     const baseVideoEl = document.getElementById(`syncvideo-${validVideos[0].id}`);
     const rawW = baseVideoEl.videoWidth;
     const rawH = baseVideoEl.videoHeight;
     const vw = Math.round(rawW * q.scale);
     const vh = Math.round(rawH * q.scale);
-    
+
     const baseOffset = state.offsets[validVideos[0].id] || 0;
     const exportStartTime = Math.max(0, -baseOffset);
     let maxEndTime = 0;
@@ -924,7 +962,7 @@ async function exportVideo() {
     const totalDuration = maxEndTime - exportStartTime;
     const totalFrames = Math.ceil(totalDuration * fps);
     const frameInterval = 1 / fps;
-    
+
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     if (layout === 'horizontal') {
@@ -936,170 +974,232 @@ async function exportVideo() {
     } else {
       canvas.width = vw; canvas.height = vh * validVideos.length;
     }
-    
-    progressEl.textContent = `画布: ${canvas.width}x${canvas.height} @ ${fps}fps, 加载视频...`;
-    
-    const exportVideos = [];
-    for (const v of validVideos) {
+
+    progressEl.textContent = `画布: ${canvas.width}x${canvas.height} @ ${fps}fps (源${detectedFps.toFixed(0)}fps), 并行加载...`;
+
+    // 并行加载所有视频
+    const exportVideos = await Promise.all(validVideos.map(async (v) => {
       const vid = document.createElement('video');
       vid.src = v.url; vid.muted = true; vid.preload = 'auto';
-      await new Promise(resolve => { vid.addEventListener('loadeddata', resolve); vid.load(); });
+      await new Promise((resolve, reject) => {
+        vid.addEventListener('loadeddata', resolve);
+        vid.addEventListener('error', () => reject(new Error(`视频加载失败: ${v.name}`)));
+        vid.load();
+      });
       vid.currentTime = Math.max(0.01, exportStartTime + (state.offsets[v.id] || 0));
       await new Promise(resolve => { vid.addEventListener('seeked', resolve, { once: true }); setTimeout(resolve, 2000); });
-      exportVideos.push(vid);
-    }
-    
+      return vid;
+    }));
+
     const renderStart = performance.now();
-    
+
     // 绘制单帧到canvas
-    function drawFrame(time) {
+    function drawFrame() {
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       if (layout === 'horizontal') {
         validVideos.forEach((v, i) => ctx.drawImage(exportVideos[i], i * vw, 0, vw, vh));
       } else if (layout === 'top1-bottom2' && validVideos.length === 3) {
-        ctx.drawImage(exportVideos[0], vw*0.5, 0, vw, vh);
+        ctx.drawImage(exportVideos[0], vw * 0.5, 0, vw, vh);
         ctx.drawImage(exportVideos[1], 0, vh, vw, vh);
         ctx.drawImage(exportVideos[2], vw, vh, vw, vh);
       } else if (layout === 'top2-bottom1' && validVideos.length === 3) {
         ctx.drawImage(exportVideos[0], 0, 0, vw, vh);
         ctx.drawImage(exportVideos[1], vw, 0, vw, vh);
-        ctx.drawImage(exportVideos[2], vw*0.5, vh, vw, vh);
+        ctx.drawImage(exportVideos[2], vw * 0.5, vh, vw, vh);
       } else if (layout === 'grid-4' && validVideos.length === 4) {
-        validVideos.forEach((v, i) => ctx.drawImage(exportVideos[i], (i%2)*vw, Math.floor(i/2)*vh, vw, vh));
+        validVideos.forEach((v, i) => ctx.drawImage(exportVideos[i], (i % 2) * vw, Math.floor(i / 2) * vh, vw, vh));
       } else {
-        validVideos.forEach((v, i) => ctx.drawImage(exportVideos[i], 0, i*vh, vw, vh));
+        validVideos.forEach((v, i) => ctx.drawImage(exportVideos[i], 0, i * vh, vw, vh));
       }
     }
-    
-    // Seek所有视频
-    async function seekAll(time) {
+
+    // Seek所有视频（安全超时 + 防竞争）
+    function seekAll(time) {
       const ps = validVideos.map((v, i) => {
         const vid = exportVideos[i];
         const offset = state.offsets[v.id] || 0;
         const target = Math.max(0.01, Math.min(v.duration - 0.01, time + offset));
         if (Math.abs(vid.currentTime - target) < frameInterval * 0.5) return Promise.resolve();
         return new Promise(resolve => {
+          let done = false;
+          const finish = () => { if (!done) { done = true; resolve(); } };
+          vid.addEventListener('seeked', finish, { once: true });
           vid.currentTime = target;
-          vid.addEventListener('seeked', resolve, { once: true });
-          setTimeout(resolve, 300);
+          setTimeout(finish, 800);
         });
       });
-      await Promise.all(ps);
+      return Promise.all(ps);
     }
-    
-    // 更新进度
-    function updateProgress(frameIdx) {
-      if (frameIdx % (fps * 2) === 0) {
+
+    function updateProgress(frameIdx, tag) {
+      if (frameIdx % Math.max(1, Math.floor(fps * 2)) === 0 || frameIdx === totalFrames - 1) {
         const elapsed = (performance.now() - renderStart) / 1000;
         const speed = frameIdx / Math.max(0.1, elapsed);
         const remaining = (totalFrames - frameIdx) / Math.max(0.1, speed);
         const pct = Math.round((frameIdx / totalFrames) * 100);
-        return `${pct}% | 帧${frameIdx}/${totalFrames} | ~${remaining.toFixed(0)}s`;
+        return `${tag} ${pct}% | 帧${frameIdx}/${totalFrames} | ~${speed.toFixed(1)}帧/s | 剩余~${remaining.toFixed(0)}s`;
       }
       return null;
     }
 
-    // ===== 方案1: MP4直接编码（WebCodecs + mp4-muxer）=====
-    const canMP4 = wantMP4 && typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined' && typeof Mp4Muxer !== 'undefined';
-    
+    // ===== 检测MP4能力 =====
+    const hasWebCodecs = typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
+    let Mp4MuxerLib = null;
+    if (wantMP4 && hasWebCodecs) {
+      try {
+        progressEl.textContent = '加载 mp4-muxer 库...';
+        Mp4MuxerLib = await import(MP4_MUXER_URL);
+      } catch (e) {
+        console.warn('mp4-muxer 加载失败:', e);
+      }
+    }
+    const canMP4 = wantMP4 && hasWebCodecs && Mp4MuxerLib;
+    console.log(`MP4能力: wantMP4=${wantMP4}, WebCodecs=${hasWebCodecs}, mp4-muxer=${!!Mp4MuxerLib}, canMP4=${canMP4}, fps=${fps}`);
+
+    // ===== 方案1: MP4直接编码（WebCodecs + mp4-muxer 并行）=====
     if (canMP4) {
-      progressEl.textContent = 'WebCodecs + mp4-muxer 编码MP4...';
-      
-      const muxer = new Mp4Muxer.Muxer({
-        target: new Mp4Muxer.ArrayBufferTarget(),
+      progressEl.textContent = `WebCodecs MP4编码 (${fps}fps)...`;
+
+      const { Muxer, ArrayBufferTarget } = Mp4MuxerLib;
+      const muxer = new Muxer({
+        target: new ArrayBufferTarget(),
         video: { codec: 'avc', width: canvas.width, height: canvas.height, frameRate: fps },
-        fastStart: 'in-memory'
+        fastStart: 'in-memory',
+        firstTimestampBehavior: 'offset'
       });
-      
+
+      // output回调直接写入muxer（不收集再批量写）
       const encoder = new VideoEncoder({
         output: (chunk) => {
           const data = new Uint8Array(chunk.byteLength);
           chunk.copyTo(data);
-          muxer.addVideoChunk({
-            type: chunk.type === 'key' ? 'key' : 'delta',
-            timestamp: chunk.timestamp,
-            duration: chunk.duration || Math.round(1000000 / fps),
-            data: data
-          });
+          muxer.addVideoChunkRaw(
+            data,
+            chunk.type === 'key' ? 'key' : 'delta',
+            chunk.timestamp,
+            chunk.duration || Math.round(1000000 / fps)
+          );
         },
         error: (e) => console.error('VideoEncoder error:', e)
       });
-      
+
       encoder.configure({
         codec: 'avc1.42E01F',
         width: canvas.width, height: canvas.height,
         bitrate: q.bitrate, framerate: fps,
         avc: { format: 'avc' }
       });
-      
+
+      // 并行流水线：N帧预seek缓冲 + encode不阻塞
+      const LOOKAHEAD = Math.min(8, Math.max(4, Math.ceil(fps * 0.1))); // 120fps→12, 60fps→6
+      let seekPromises = [];
+
+      // 预热：启动前几帧的seek
+      for (let k = 0; k < Math.min(LOOKAHEAD, totalFrames); k++) {
+        seekPromises[k] = seekAll(exportStartTime + k * frameInterval);
+      }
+
       for (let fi = 0; fi < totalFrames; fi++) {
         if (!state.exporting) break;
-        const time = exportStartTime + fi * frameInterval;
-        const pg = updateProgress(fi);
-        if (pg) progressEl.textContent = `编码MP4: ${pg}`;
-        
-        await seekAll(time);
-        drawFrame(time);
-        
-        const frame = new VideoFrame(canvas, { timestamp: Math.round(fi * 1000000 / fps) });
-        await encoder.encode(frame, { keyFrame: fi % (fps * 2) === 0 });
-        frame.close();
-        
-        if (fi % 10 === 0) await new Promise(r => setTimeout(r, 0));
+
+        // 等待当前帧seek完成
+        await seekPromises[fi];
+
+        const pg = updateProgress(fi, '编码MP4:');
+        if (pg) progressEl.textContent = pg;
+
+        // 绘制帧
+        drawFrame();
+
+        // 创建VideoFrame并encode（不等待完成）
+        let frame;
+        try {
+          frame = new VideoFrame(canvas, { timestamp: Math.round(fi * 1000000 / fps) });
+          encoder.encode(frame, { keyFrame: fi % (fps * 2) === 0 });
+        } finally {
+          if (frame) frame.close();
+        }
+
+        // 预seek后面的帧
+        const nextK = fi + LOOKAHEAD;
+        if (nextK < totalFrames) {
+          seekPromises[nextK] = seekAll(exportStartTime + nextK * frameInterval);
+        }
+
+        // 背压控制：编码器队列满了就等
+        while (encoder.encodeQueueSize > 4) {
+          await new Promise(r => setTimeout(r, 1));
+        }
+        // 定期让出主线程
+        if (fi % 16 === 0) await new Promise(r => setTimeout(r, 0));
       }
-      
+
+      // 等待所有编码完成
       await encoder.flush();
       encoder.close();
       muxer.finalize();
-      
+
       const mp4Blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
       downloadBlob(mp4Blob, 'mp4', layout);
       const elapsed = ((performance.now() - renderStart) / 1000).toFixed(0);
-      progressEl.textContent = `✅ 导出完成 (${(mp4Blob.size/1024/1024).toFixed(1)}MB MP4, ${elapsed}s)`;
-      
+      progressEl.textContent = `✅ 导出完成 (${(mp4Blob.size / 1024 / 1024).toFixed(1)}MB MP4, ${elapsed}s, ${fps}fps)`;
+
     // ===== 方案2: WebM录制 =====
     } else {
-      if (wantMP4) progressEl.textContent = 'WebCodecs不可用，使用WebM...';
-      else progressEl.textContent = '开始录制WebM...';
-      
+      if (wantMP4) progressEl.textContent = `WebCodecs=${hasWebCodecs}, 回退WebM...`;
+      else progressEl.textContent = `开始录制WebM (${fps}fps)...`;
+
       const stream = canvas.captureStream(fps);
       const chunks = [];
       let mimeType = 'video/webm;codecs=vp9';
       if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm;codecs=vp8';
       if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
-      
+
       const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: q.bitrate });
       recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
       recorder.start(100);
-      
+
+      // 并行seek流水线
+      const LOOKAHEAD = Math.min(8, Math.max(4, Math.ceil(fps * 0.1)));
+      let seekPromises = [];
+      for (let k = 0; k < Math.min(LOOKAHEAD, totalFrames); k++) {
+        seekPromises[k] = seekAll(exportStartTime + k * frameInterval);
+      }
+
       for (let fi = 0; fi < totalFrames; fi++) {
         if (!state.exporting) break;
-        const time = exportStartTime + fi * frameInterval;
-        const pg = updateProgress(fi);
-        if (pg) progressEl.textContent = `录制WebM: ${pg}`;
-        
-        await seekAll(time);
-        drawFrame(time);
+
+        await seekPromises[fi];
+
+        const pg = updateProgress(fi, '录制WebM:');
+        if (pg) progressEl.textContent = pg;
+
+        drawFrame();
         const track = stream.getTracks()[0];
-      if (track && track.requestFrame) track.requestFrame();
-        if (fi % 10 === 0) await new Promise(r => setTimeout(r, 0));
+        if (track && track.requestFrame) track.requestFrame();
+
+        const nextK = fi + LOOKAHEAD;
+        if (nextK < totalFrames) {
+          seekPromises[nextK] = seekAll(exportStartTime + nextK * frameInterval);
+        }
+        if (fi % 16 === 0) await new Promise(r => setTimeout(r, 0));
       }
-      
+
       recorder.stop();
       await new Promise(resolve => { recorder.onstop = () => setTimeout(resolve, 300); });
-      
+
       const webmBlob = new Blob(chunks, { type: 'video/webm' });
       downloadBlob(webmBlob, 'webm', layout);
       const elapsed = ((performance.now() - renderStart) / 1000).toFixed(0);
-      progressEl.textContent = `✅ 导出完成 (${(webmBlob.size/1024/1024).toFixed(1)}MB WebM, ${elapsed}s)`;
+      progressEl.textContent = `✅ 导出完成 (${(webmBlob.size / 1024 / 1024).toFixed(1)}MB WebM, ${elapsed}s, ${fps}fps)`;
     }
-    
+
     exportVideos.forEach(v => { v.src = ''; v.load(); });
     exportBtn.disabled = false;
     exportBtn.textContent = '📹 导出视频';
     state.exporting = false;
-    
+
   } catch (err) {
     console.error('导出失败:', err);
     progressEl.textContent = '导出失败: ' + err.message;
