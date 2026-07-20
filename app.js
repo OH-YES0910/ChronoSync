@@ -514,7 +514,7 @@ async function analyzeVideos() {
     <div class="progress-container">
       <div class="progress-label" id="analysisLabel">正在分析...</div>
       <div class="progress-bar-track">
-        <div class="progress-bar-fill" id="analysisFill" style="width:0%"></div>
+        <div class="progress-bar-fill progress-pulse" id="analysisFill" style="width:30%"></div>
       </div>
     </div>`;
   
@@ -523,8 +523,18 @@ async function analyzeVideos() {
     const fillEl = document.getElementById('analysisFill');
     const labelEl = document.getElementById('analysisLabel');
     
+    // 进度条动画：模拟进度
+    let fakeProgress = 30;
+    const progressTimer = setInterval(() => {
+      if (fakeProgress < 85) {
+        fakeProgress += 2;
+        if (fillEl) fillEl.style.width = fakeProgress + '%';
+      }
+    }, 500);
+    
     await Promise.all(state.videos.map(v => extractFrames(v.id)));
     
+    clearInterval(progressTimer);
     if (fillEl) fillEl.style.width = '90%';
     if (labelEl) labelEl.textContent = '正在分析...';
     
@@ -669,6 +679,8 @@ function initSync() {
     // 全部加载完毕后再设置初始时间
     updateSyncFromSlider();
     initDragAndDrop();
+    // 延迟0.5秒再seek一次，确保所有视频都渲染了第一帧
+    setTimeout(() => updateSyncFromSlider(), 500);
   });
   
   const slider = document.getElementById('timeSlider');
@@ -739,6 +751,7 @@ function startSyncPlay() {
     
     const baseVideo = document.getElementById(`syncvideo-${state.videos[0].id}`);
     let lastDisplayTime = -1;
+    let lastSyncTime = -1;
     
     function syncLoop(timestamp) {
       if (!state.isPlaying) return;
@@ -746,21 +759,37 @@ function startSyncPlay() {
       if (baseVideo && !baseVideo.paused) {
         const baseTime = baseVideo.currentTime;
         
-        // 更新UI显示（降低频率：每0.5秒更新一次）
+        // 更新UI显示（每0.5秒）
         if (Math.abs(baseTime - lastDisplayTime) >= 0.5) {
           lastDisplayTime = baseTime;
           slider.value = baseTime;
           document.getElementById('timeDisplay').textContent = baseTime.toFixed(1) + 's';
-          
-          // 同步其他视频到正确位置（只在偏差>1秒时seek，避免频繁seek卡顿）
+        }
+        
+        // 同步其他视频（每0.3秒检查一次）
+        if (Math.abs(baseTime - lastSyncTime) >= 0.3) {
+          lastSyncTime = baseTime;
           state.videos.forEach((v, i) => {
             if (i === 0) return;
             const video = document.getElementById(`syncvideo-${v.id}`);
             if (!video || video.paused) return;
             const offset = state.offsets[v.id] || 0;
             const targetTime = baseTime + offset;
-            if (Math.abs(video.currentTime - targetTime) > 1.0) {
+            const drift = video.currentTime - targetTime;
+            const absDrift = Math.abs(drift);
+            
+            if (absDrift > 2.0) {
+              // 大偏差：直接seek（每3-4秒最多一次）
               video.currentTime = Math.max(0, targetTime);
+              video.playbackRate = 1.0;
+            } else if (absDrift > 0.15) {
+              // 中等偏差：用playbackRate微调（±5%），平滑无卡顿
+              // drift>0表示视频超前→减速；drift<0表示视频落后→加速
+              const correction = Math.max(-0.05, Math.min(0.05, -drift * 0.3));
+              video.playbackRate = 1.0 + correction;
+            } else {
+              // 偏差很小：恢复正常速率
+              video.playbackRate = 1.0;
             }
           });
         }
@@ -1073,6 +1102,16 @@ async function exportVideo() {
 
 // ===== 全部视频一键自动识别 =====
 async function autoDetectAll() {
+  // 先设置所有视频的状态为"识别中"
+  state.videos.forEach(v => {
+    const display = document.getElementById(`display-${v.id}`);
+    if (display) {
+      display.textContent = '正在自动识别计时器...';
+      display.style.color = 'var(--text-muted)';
+    }
+  });
+  updateButtons();
+  
   // 并行识别所有视频
   await Promise.all(state.videos.map(v => autoDetectRegion(v.id)));
 }
