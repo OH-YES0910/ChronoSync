@@ -509,34 +509,42 @@ async function analyzeVideos() {
   const compareArea = document.getElementById('comparisonArea');
   compareArea.innerHTML = '';
   
+  // 检查所有视频是否都有识别区域
+  const missingRegions = state.videos.filter(v => !state.regions[v.id]);
+  if (missingRegions.length > 0) {
+    container.innerHTML = `<div class="no-match">以下视频未识别到计时器区域，请先手动框选或重新自动识别：${missingRegions.map(v => v.name).join(', ')}</div>`;
+    return;
+  }
+  
+  // 计算总帧数
+  const totalFrames = state.videos.length * 8; // 每个视频8帧
+  let completedFrames = 0;
+  
   // 创建固定进度条
   container.innerHTML = `
     <div class="progress-container">
-      <div class="progress-label" id="analysisLabel">正在分析...</div>
+      <div class="progress-label" id="analysisLabel">正在分析... (0/${totalFrames})</div>
       <div class="progress-bar-track">
-        <div class="progress-bar-fill progress-pulse" id="analysisFill" style="width:30%"></div>
+        <div class="progress-bar-fill" id="analysisFill" style="width:5%"></div>
       </div>
     </div>`;
   
   try {
-    // 并行处理所有视频OCR
     const fillEl = document.getElementById('analysisFill');
     const labelEl = document.getElementById('analysisLabel');
     
-    // 进度条动画：模拟进度
-    let fakeProgress = 30;
-    const progressTimer = setInterval(() => {
-      if (fakeProgress < 85) {
-        fakeProgress += 2;
-        if (fillEl) fillEl.style.width = fakeProgress + '%';
-      }
-    }, 500);
+    function onFrameComplete(videoName) {
+      completedFrames++;
+      const pct = Math.round(5 + (completedFrames / totalFrames) * 85);
+      if (fillEl) fillEl.style.width = pct + '%';
+      if (labelEl) labelEl.textContent = `正在分析... (${completedFrames}/${totalFrames})`;
+    }
     
-    await Promise.all(state.videos.map(v => extractFrames(v.id)));
+    // 并行处理所有视频OCR，每帧回调更新进度
+    await Promise.all(state.videos.map(v => extractFrames(v.id, onFrameComplete)));
     
-    clearInterval(progressTimer);
-    if (fillEl) fillEl.style.width = '90%';
-    if (labelEl) labelEl.textContent = '正在分析...';
+    if (fillEl) fillEl.style.width = '95%';
+    if (labelEl) labelEl.textContent = '正在计算偏移...';
     
     await calculateBestOffset();
     if (fillEl) fillEl.style.width = '100%';
@@ -757,9 +765,18 @@ function startSyncPlay() {
   
   Promise.all(seekPromises).then(() => {
     // 所有视频seek到位后统一播放
-    state.videos.forEach(v => {
+    const baseOffset = state.offsets[state.videos[0].id] || 0;
+    state.videos.forEach((v, i) => {
       const video = document.getElementById(`syncvideo-${v.id}`);
-      if (video) {
+      if (!video) return;
+      const offset = state.offsets[v.id] || 0;
+      const startDelay = offset - baseOffset; // 相对基准的延迟
+      
+      if (startDelay < 0) {
+        // 负偏移：视频还没到该出现的时间，暂停等syncLoop唤醒
+        video.currentTime = 0;
+        video.pause();
+      } else {
         video.playbackRate = 1.0;
         video.play().catch(() => {});
       }
@@ -788,19 +805,37 @@ function startSyncPlay() {
           state.videos.forEach((v, i) => {
             if (i === 0) return;
             const video = document.getElementById(`syncvideo-${v.id}`);
-            if (!video || video.paused) return;
+            if (!video) return;
             const offset = state.offsets[v.id] || 0;
             const targetTime = baseTime + offset;
+            
+            // 负偏移：视频还没到该出现的时间，暂停并归零
+            if (targetTime < 0) {
+              if (!video.paused) {
+                video.pause();
+                video.currentTime = 0;
+                video.playbackRate = 1.0;
+              }
+              return;
+            }
+            
+            // 正偏移：如果之前被暂停了，恢复播放
+            if (video.paused) {
+              video.currentTime = targetTime;
+              video.playbackRate = 1.0;
+              video.play().catch(() => {});
+              return;
+            }
+            
             const drift = video.currentTime - targetTime;
             const absDrift = Math.abs(drift);
             
             if (absDrift > 2.0) {
-              // 大偏差：直接seek（每3-4秒最多一次）
-              video.currentTime = Math.max(0, targetTime);
+              // 大偏差：直接seek
+              video.currentTime = targetTime;
               video.playbackRate = 1.0;
             } else if (absDrift > 0.15) {
               // 中等偏差：用playbackRate微调（±5%），平滑无卡顿
-              // drift>0表示视频超前→减速；drift<0表示视频落后→加速
               const correction = Math.max(-0.05, Math.min(0.05, -drift * 0.3));
               video.playbackRate = 1.0 + correction;
             } else {
@@ -1530,7 +1565,10 @@ async function extractFrames(videoId, onFrameDone) {
   const v = state.videos.find(v => v.id === videoId);
   const region = state.regions[videoId];
   
-  if (!v || !region) return;
+  if (!v || !region) {
+    console.warn('[extractFrames] Skipping', v?.name || videoId, '- region:', region);
+    return;
+  }
   
   // 参考FrameSync：先初始化OCR Worker
   const ok = await ocrInit();
@@ -1633,7 +1671,15 @@ async function extractFrames(videoId, onFrameDone) {
 // ===== 计算最佳偏移（纯OCR + Theil-Sen回归 + 中位数timer值偏移）=====
 async function calculateBestOffset() {
   const videos = state.videos.filter(v => state.frames[v.id] && state.frames[v.id].length >= 2);
-  if (videos.length < 2) return;
+  if (videos.length < 2) {
+    // 显示详细诊断信息
+    const diag = state.videos.map(v => {
+      const pts = state.frames[v.id] || [];
+      return `${v.name}: ${pts.length}个校准点`;
+    }).join(', ');
+    console.warn('[calculateBestOffset] Not enough videos with calibration:', diag);
+    return;
+  }
   
   console.log('[calculateBestOffset] Videos with calibration:', videos.length);
   
