@@ -724,23 +724,39 @@ function startSyncPlay() {
   const slider = document.getElementById('timeSlider');
   const maxTime = parseFloat(slider.max);
   
-  // 先设置所有视频到正确位置
-  updateSyncFromSlider();
-  
-  // 等所有视频 ready 后再统一播放
-  const readyPromises = state.videos.map(v => {
+  // 先设置所有视频到正确位置，然后等seek完成再播放
+  const seekPromises = state.videos.map(v => {
     return new Promise(resolve => {
       const video = document.getElementById(`syncvideo-${v.id}`);
       if (!video) { resolve(); return; }
-      if (video.readyState >= 3) { resolve(); return; } // HAVE_FUTURE_DATA
-      video.oncanplay = () => resolve();
-      video.onerror = () => resolve();
-      setTimeout(resolve, 3000); // 3秒超时
+      const offset = state.offsets[v.id] || 0;
+      const targetTime = (slider.value / 100) * video.duration + offset;
+      const clampedTime = Math.max(0, Math.min(targetTime, video.duration || 0));
+      
+      // 如果已经在目标位置附近，直接resolve
+      if (Math.abs(video.currentTime - clampedTime) < 0.1) {
+        resolve();
+        return;
+      }
+      
+      // 设置目标位置并等待seek完成
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+      video.addEventListener('seeked', onSeeked);
+      video.currentTime = clampedTime;
+      
+      // 3秒超时防卡死
+      setTimeout(() => {
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      }, 3000);
     });
   });
   
-  Promise.all(readyPromises).then(() => {
-    // 同时开始播放所有视频
+  Promise.all(seekPromises).then(() => {
+    // 所有视频seek到位后统一播放
     state.videos.forEach(v => {
       const video = document.getElementById(`syncvideo-${v.id}`);
       if (video) {
