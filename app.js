@@ -922,7 +922,7 @@ function pauseSyncPlay() {
 }
 
 // ===== 导出视频（v74: ffmpeg.wasm 单线程编码，本地文件）=====
-const FFMPEG_LOCAL = '/ffmpeg';
+const FFMPEG_LOCAL = './ffmpeg';
 
 // toBlobURL: fetch→blob→URL，绕过CORS（替代@ffmpeg/util的同名函数）
 async function toBlobURL(url, mimeType) {
