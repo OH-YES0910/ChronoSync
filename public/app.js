@@ -1600,20 +1600,20 @@ async function extractFrames(videoId, onFrameDone) {
   v.duration = video.duration;
   
   const duration = video.duration;
-  const usableStart = duration * 0.05;  // 参考FrameSync：5%~95%
+  const usableStart = duration * 0.05;
   const usableEnd = duration * 0.95;
   
-  // 参考FrameSync：采样8帧（提高回归精度）
-  const sampleCount = 8;
+  const MIN_CALIB_POINTS = 3;      // 每个视频至少需要的校准点
+  const MAX_SAMPLES = 30;          // 最大采样次数（防止无限循环）
   const calibPoints = [];
   const usedTimes = new Set();
   
   const container = document.getElementById('analysisResult');
   
-  for (let i = 0; i < sampleCount; i++) {
+  for (let i = 0; i < MAX_SAMPLES && calibPoints.length < MIN_CALIB_POINTS; i++) {
     // 随机采样
     let time;
-    for (let attempt = 0; attempt < 200; attempt++) {  // 参考FrameSync：200次尝试
+    for (let attempt = 0; attempt < 200; attempt++) {
       const t = usableStart + Math.random() * (usableEnd - usableStart);
       const key = Math.round(t * 1000);
       if (!usedTimes.has(key)) {
@@ -1622,13 +1622,13 @@ async function extractFrames(videoId, onFrameDone) {
         break;
       }
     }
-    if (time === undefined) time = usableStart + (usableEnd - usableStart) * i / (sampleCount - 1);
+    if (time === undefined) continue; // 所有时间点都用过了
     
-    // 参考FrameSync：先暂停，再seek
+    // 先暂停，再seek
     video.pause();
     video.currentTime = time;
     
-    // 参考FrameSync：等待seeked + 2次requestAnimationFrame确保渲染
+    // 等待seeked + 2次requestAnimationFrame确保渲染
     await new Promise(resolve => {
       const to = setTimeout(resolve, 2000);
       const onSeeked = () => { clearTimeout(to); resolve(); };
@@ -1637,10 +1637,10 @@ async function extractFrames(videoId, onFrameDone) {
     await new Promise(r => requestAnimationFrame(r));
     await new Promise(r => requestAnimationFrame(r));
     
-    // 参考FrameSync：先尝试当前帧
+    // 尝试当前帧
     let result = await readTimerValue(video, region);
     
-    // 参考FrameSync：如果失败，重试 time + 0.05s
+    // 如果失败，重试 time + 0.05s
     if (result.value === null) {
       const retryTime = Math.min(time + 0.05, duration - 0.01);
       video.currentTime = retryTime;
@@ -1660,12 +1660,13 @@ async function extractFrames(videoId, onFrameDone) {
     
     if (result.value !== null) {
       calibPoints.push({ videoTime: time, timerValue: result.value });
+      console.log(`[extractFrames] ✓ 点${calibPoints.length}: time=${time.toFixed(2)}s, timer=${result.value}s`);
     }
   }
   
   // 校准点不足时发出警告
-  if (calibPoints.length < 3) {
-    console.warn('[extractFrames] Warning:', v.name, `only ${calibPoints.length} calibration points (need ≥3 for reliable alignment)`);
+  if (calibPoints.length < MIN_CALIB_POINTS) {
+    console.warn('[extractFrames] Warning:', v.name, `only ${calibPoints.length} calibration points (need ≥${MIN_CALIB_POINTS})`);
   }
   
   // 清理临时video元素，释放内存
