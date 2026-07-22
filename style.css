@@ -428,6 +428,77 @@ body {
   cursor: pointer;
 }
 
+.export-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.slider-row label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  min-width: 3rem;
+}
+
+.slider-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.slider-val {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  min-width: 4.5rem;
+  text-align: right;
+}
+
+.bitrate-btns {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.bitrate-btn {
+  padding: 0.3rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.bitrate-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.bitrate-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+  font-weight: 600;
+}
+
+.export-sliders select {
+  padding: 0.4rem 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
 .export-section #exportBtn {
   padding: 0.5rem 1rem;
   background: var(--success);
