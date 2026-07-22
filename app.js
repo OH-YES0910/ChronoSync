@@ -529,7 +529,7 @@ async function analyzeVideos() {
   // 创建固定进度条
   container.innerHTML = `
     <div class="progress-container">
-      <div class="progress-label" id="analysisLabel">正在分析... (0/${totalFrames})</div>
+      <div class="progress-label" id="analysisLabel">正在分析...</div>
       <div class="progress-bar-track">
         <div class="progress-bar-fill" id="analysisFill" style="width:5%"></div>
       </div>
@@ -543,7 +543,7 @@ async function analyzeVideos() {
       completedFrames++;
       const pct = Math.round(5 + (completedFrames / totalFrames) * 85);
       if (fillEl) fillEl.style.width = pct + '%';
-      if (labelEl) labelEl.textContent = `正在分析... (${completedFrames}/${totalFrames})`;
+      if (labelEl) labelEl.textContent = '正在分析...';
     }
     
     // 并行处理所有视频OCR，每帧回调更新进度
