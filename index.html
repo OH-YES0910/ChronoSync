@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net; worker-src 'self' blob:; style-src 'self' 'unsafe-inline';">
   <title>ChronoSync</title>
   <link rel="stylesheet" href="style.css?v=10">
 </head>
@@ -29,6 +30,7 @@
       </div>
       
       <div class="upload-area" id="uploadArea">
+        <label for="fileInput" class="sr-only">选择视频文件</label>
         <input type="file" id="fileInput" accept="video/*" multiple hidden>
         <div class="upload-placeholder">
           <span class="upload-icon">📁</span>
