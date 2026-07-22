@@ -1015,9 +1015,8 @@ async function exportVideo() {
     });
 
     await ffmpeg.load({
-      coreURL: await toBlobURL(`${FFMPEG_CDN}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${FFMPEG_CDN}/ffmpeg-core.wasm`, 'application/wasm'),
-      workerURL: await toBlobURL(`${FFMPEG_CDN}/ffmpeg-core.worker.js`, 'text/javascript'),
+      coreURL: await toBlobURL(`${FFMPEG_LOCAL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${FFMPEG_LOCAL}/ffmpeg-core.wasm`, 'application/wasm'),
     });
 
     progressEl.textContent = '加载视频...';
