@@ -40,4 +40,8 @@
     <color name="md_theme_onSurfaceVariant">#CAC4D0</color>
     <color name="md_theme_error">#FFB4AB</color>
     <color name="md_theme_onError">#690005</color>
+
+    <!-- Basic colors -->
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
 </resources>

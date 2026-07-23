@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading.Channels;
 using ChronoSync.Windows.Models;
 using OpenCvSharp;
 
@@ -6,7 +7,7 @@ namespace ChronoSync.Windows.Services;
 
 /// <summary>
 /// Video export service using OpenCV to draw frames and FFMpegCore to encode.
-/// Replicates app.js exportVideo() layout logic.
+/// Uses parallel frame extraction via Channels producer-consumer pattern.
 /// </summary>
 public static class ExportService
 {
@@ -20,7 +21,12 @@ public static class ExportService
     }
 
     /// <summary>
-    /// Export synchronized comparison video.
+    /// An extracted frame from a specific video at a specific time index.
+    /// </summary>
+    private sealed record FrameData(int FrameIndex, int VideoIndex, Mat Frame);
+
+    /// <summary>
+    /// Export synchronized comparison video with parallel frame extraction.
     /// </summary>
     public static async Task ExportAsync(
         List<VideoExportData> videos,
@@ -39,21 +45,14 @@ public static class ExportService
             Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
             $"ChronoSync_{DateTime.Now:yyyyMMdd_HHmmss}.mp4");
 
-        onProgress?.Invoke("加载视频...");
+        onProgress?.Invoke("并行加载视频...");
 
-        // Load all videos
-        var captures = new List<VideoCapture>();
+        // Phase 1: Load all video captures in parallel
+        var captures = await LoadCapturesInParallelAsync(videos, ct);
+
         try
         {
-            foreach (var v in videos)
-            {
-                var cap = new VideoCapture(v.FilePath);
-                if (!cap.IsOpened())
-                    throw new Exception($"无法打开视频: {v.Name}");
-                captures.Add(cap);
-            }
-
-            // Get base video dimensions
+            // Get base video dimensions from first capture
             int rawW = captures[0].FrameWidth;
             int rawH = captures[0].FrameHeight;
             double scale = Math.Min((double)targetHeight / rawH, 1.0);
@@ -61,28 +60,9 @@ public static class ExportService
             int vh = (int)Math.Round(rawH * scale);
 
             // Calculate canvas size based on layout
-            int canvasW, canvasH;
-            switch (layout)
-            {
-                case Layout.Horizontal:
-                    canvasW = vw * videos.Count;
-                    canvasH = vh;
-                    break;
-                case Layout.Top1Bottom2 when videos.Count == 3:
-                case Layout.Top2Bottom1 when videos.Count == 3:
-                    canvasW = vw * 2;
-                    canvasH = vh * 2;
-                    break;
-                case Layout.Grid4 when videos.Count == 4:
-                    canvasW = vw * 2;
-                    canvasH = vh * 2;
-                    break;
-                default: // Vertical
-                    canvasW = vw;
-                    canvasH = vh * videos.Count;
-                    break;
-            }
+            var (canvasW, canvasH) = CalculateCanvasSize(layout, videos.Count, vw, vh);
 
+            // Calculate export timing
             double baseOffset = offsets.TryGetValue(videos[0].Id, out var bo) ? bo : 0;
             double exportStartTime = Math.Max(0, -baseOffset);
             double maxEndTime = 0;
@@ -96,79 +76,31 @@ public static class ExportService
             int totalFrames = (int)Math.Ceiling(totalDuration * targetFps);
             double frameInterval = 1.0 / targetFps;
 
-            onProgress?.Invoke($"画布: {canvasW}x{canvasH} @ {targetFps}fps, 共{totalFrames}帧");
+            onProgress?.Invoke(
+                $"画布: {canvasW}x{canvasH} @ {targetFps}fps, 共{totalFrames}帧 (并行抽帧)");
 
             // Setup temp directory for frames
-            string tempDir = Path.Combine(Path.GetTempPath(), $"chronosync_export_{Guid.NewGuid():N}");
+            string tempDir = Path.Combine(
+                Path.GetTempPath(), $"chronosync_export_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
 
             try
             {
-                using var canvas = new Mat(canvasH, canvasW, MatType.CV_8UC3, Scalar.All(0));
+                // Phase 2: Parallel frame extraction via Channels producer-consumer
+                await ExtractAndComposeFramesAsync(
+                    captures, videos, offsets, layout,
+                    vw, vh, canvasW, canvasH,
+                    exportStartTime, frameInterval, totalFrames,
+                    targetFps, tempDir, onProgress, ct);
 
-                // Extract and save frames
-                for (int fi = 0; fi < totalFrames; fi++)
-                {
-                    ct.ThrowIfCancellationRequested();
-
-                    double time = exportStartTime + fi * frameInterval;
-
-                    // Seek all videos to correct position
-                    for (int vi = 0; vi < videos.Count; vi++)
-                    {
-                        double off = offsets.TryGetValue(videos[vi].Id, out var o) ? o : 0;
-                        double target = Math.Max(0.01, Math.Min(videos[vi].Duration - 0.01, time + off));
-                        captures[vi].Set(VideoCaptureProperties.PosMsec, target * 1000);
-                    }
-
-                    // Draw frames onto canvas based on layout
-                    canvas.SetTo(Scalar.All(0));
-                    DrawFrames(canvas, captures, videos, layout, vw, vh);
-
-                    // Save frame as JPEG
-                    string frameFile = Path.Combine(tempDir, $"frame{fi:D5}.jpg");
-                    Cv2.ImWrite(frameFile, canvas);
-
-                    if (fi % Math.Max(1, targetFps * 2) == 0)
-                    {
-                        int pct = (int)((double)fi / totalFrames * 100);
-                        onProgress?.Invoke($"抽帧 {pct}% | 帧{fi}/{totalFrames}");
-                    }
-                }
-
+                // Phase 3: FFmpeg encoding
                 onProgress?.Invoke("FFmpeg编码中...");
-
-                // Use FFMpegCore to encode
-                string ffmpegDir = Path.GetDirectoryName(typeof(FFMpegCore.FFMpeg).Assembly.Location) ?? "";
-                string ffmpegPath = FindFfmpeg();
-
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = ffmpegPath,
-                    Arguments = $"-framerate {targetFps} -i \"{tempDir}/frame%05d.jpg\" " +
-                               $"-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p " +
-                               $"-movflags +faststart \"{outputPath}\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardError = true
-                };
-
-                using var process = System.Diagnostics.Process.Start(psi);
-                if (process is not null)
-                {
-                    await process.WaitForExitAsync(ct);
-                    if (process.ExitCode != 0)
-                    {
-                        string error = await process.StandardError.ReadToEndAsync(ct);
-                        throw new Exception($"FFmpeg错误: {error}");
-                    }
-                }
+                await RunFfmpegAsync(targetFps, tempDir, outputPath, onProgress, ct);
 
                 onProgress?.Invoke($"导出完成: {outputPath}");
             }
             finally
             {
-                // Cleanup temp frames
                 if (Directory.Exists(tempDir))
                     Directory.Delete(tempDir, true);
             }
@@ -180,80 +112,264 @@ public static class ExportService
         }
     }
 
-    private static void DrawFrames(
-        Mat canvas,
+    /// <summary>
+    /// Load all video captures in parallel using Task.WhenAll.
+    /// </summary>
+    private static async Task<List<VideoCapture>> LoadCapturesInParallelAsync(
+        List<VideoExportData> videos, CancellationToken ct)
+    {
+        var loadTasks = videos.Select(v => Task.Run(() =>
+        {
+            ct.ThrowIfCancellationRequested();
+            var cap = new VideoCapture(v.FilePath);
+            if (!cap.IsOpened())
+            {
+                cap.Dispose();
+                throw new Exception($"无法打开视频: {v.Name}");
+            }
+            return cap;
+        }, ct)).ToArray();
+
+        return (await Task.WhenAll(loadTasks)).ToList();
+    }
+
+    /// <summary>
+    /// Parallel frame extraction using Channels producer-consumer pattern.
+    /// Producers: one task per video, each extracts frames independently.
+    /// Consumer: composes canvas and saves frames sequentially.
+    /// Pipeline overlap: producers extract ahead while consumer composes.
+    /// </summary>
+    private static async Task ExtractAndComposeFramesAsync(
         List<VideoCapture> captures,
         List<VideoExportData> videos,
+        Dictionary<string, double> offsets,
         Layout layout,
-        int vw,
-        int vh)
+        int vw, int vh, int canvasW, int canvasH,
+        double exportStartTime, double frameInterval, int totalFrames,
+        int targetFps, string tempDir,
+        Action<string>? onProgress, CancellationToken ct)
     {
+        // Bounded channel: limits memory while allowing pipeline overlap
+        // Capacity = videos * 4 frames buffered ahead
+        int channelCapacity = Math.Min(videos.Count * 4, 32);
+        var channel = Channel.CreateBounded<FrameData>(
+            new BoundedChannelOptions(channelCapacity)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = BoundedChannelFullMode.Wait
+            });
+
+        // Start parallel extraction producers (one per video)
+        var producers = new Task[videos.Count];
+        for (int vi = 0; vi < videos.Count; vi++)
+        {
+            int videoIndex = vi;
+            var video = videos[videoIndex];
+            var capture = captures[videoIndex];
+            double videoOffset = offsets.TryGetValue(video.Id, out var o) ? o : 0;
+
+            producers[vi] = Task.Run(
+                () => ExtractVideoFramesAsync(
+                    capture, videoIndex, video, videoOffset,
+                    exportStartTime, frameInterval, totalFrames,
+                    vw, vh, channel.Writer, ct),
+                ct);
+        }
+
+        // Signal channel completion when all producers finish
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.WhenAll(producers);
+            }
+            catch (Exception ex)
+            {
+                channel.Writer.TryComplete(ex);
+                return;
+            }
+            channel.Writer.TryComplete();
+        }, ct);
+
+        // Consumer: read from channel, compose canvas, save frames
+        await ComposeFramesFromChannelAsync(
+            channel.Reader, videos.Count, layout, vw, vh,
+            canvasW, canvasH, totalFrames, targetFps, tempDir,
+            onProgress, ct);
+    }
+
+    /// <summary>
+    /// Producer: Extract all frames from a single video and write to channel.
+    /// Each producer has its own VideoCapture (thread-safe isolation).
+    /// WriteAsync provides backpressure via the bounded channel.
+    /// </summary>
+    private static async Task ExtractVideoFramesAsync(
+        VideoCapture capture, int videoIndex, VideoExportData video,
+        double videoOffset, double exportStartTime, double frameInterval,
+        int totalFrames, int vw, int vh,
+        ChannelWriter<FrameData> writer, CancellationToken ct)
+    {
+        for (int fi = 0; fi < totalFrames; fi++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            double time = exportStartTime + fi * frameInterval;
+            double target = Math.Max(
+                0.01,
+                Math.Min(video.Duration - 0.01, time + videoOffset));
+            capture.Set(VideoCaptureProperties.PosMsec, target * 1000);
+
+            Mat frame;
+            using (var rawFrame = new Mat())
+            {
+                if (capture.Read(rawFrame) && !rawFrame.Empty())
+                {
+                    frame = ResizeFrame(rawFrame, vw, vh);
+                }
+                else
+                {
+                    // Black frame placeholder for missing frames
+                    frame = new Mat(vh, vw, MatType.CV_8UC3, Scalar.All(0));
+                }
+            }
+
+            // WriteAsync blocks if channel is full (backpressure)
+            await writer.WriteAsync(new FrameData(fi, videoIndex, frame), ct);
+        }
+    }
+
+    /// <summary>
+    /// Consumer: Read frames from channel, buffer by frame index,
+    /// compose canvas when all videos' frames arrive, save to disk.
+    /// Frames may arrive out-of-order from different producers.
+    /// </summary>
+    private static async Task ComposeFramesFromChannelAsync(
+        ChannelReader<FrameData> reader, int videoCount, Layout layout,
+        int vw, int vh, int canvasW, int canvasH,
+        int totalFrames, int targetFps, string tempDir,
+        Action<string>? onProgress, CancellationToken ct)
+    {
+        using var canvas = new Mat(canvasH, canvasW, MatType.CV_8UC3, Scalar.All(0));
+
+        // Buffer frames by frame index until all videos' frames arrive
+        var frameBuffers = new Dictionary<int, List<FrameData>>();
+        int composedCount = 0;
+
+        await foreach (var fd in reader.ReadAllAsync(ct))
+        {
+            if (!frameBuffers.TryGetValue(fd.FrameIndex, out var buffer))
+            {
+                buffer = new List<FrameData>(videoCount);
+                frameBuffers[fd.FrameIndex] = buffer;
+            }
+            buffer.Add(fd);
+
+            // When all videos' frames for this index are collected, compose
+            if (buffer.Count == videoCount)
+            {
+                canvas.SetTo(Scalar.All(0));
+                ComposeCanvasFromBuffers(canvas, buffer, layout, vw, vh);
+
+                string frameFile = Path.Combine(
+                    tempDir, $"frame{composedCount:D5}.jpg");
+                Cv2.ImWrite(frameFile, canvas);
+                composedCount++;
+
+                // Dispose extracted Mats to release memory
+                foreach (var f in buffer)
+                    f.Frame.Dispose();
+                frameBuffers.Remove(fd.FrameIndex);
+
+                if (composedCount % Math.Max(1, targetFps * 2) == 0)
+                {
+                    int pct = (int)((double)composedCount / totalFrames * 100);
+                    onProgress?.Invoke(
+                        $"并行抽帧 {pct}% | 帧{composedCount}/{totalFrames}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Compose the canvas from buffered frame data based on layout.
+    /// </summary>
+    private static void ComposeCanvasFromBuffers(
+        Mat canvas, List<FrameData> buffers, Layout layout,
+        int vw, int vh)
+    {
+        // Sort by video index to ensure correct ordering
+        buffers.Sort((a, b) => a.VideoIndex.CompareTo(b.VideoIndex));
+
         switch (layout)
         {
             case Layout.Horizontal:
-                for (int i = 0; i < videos.Count; i++)
+                for (int i = 0; i < buffers.Count; i++)
                 {
-                    using var frame = new Mat();
-                    if (captures[i].Read(frame) && !frame.Empty())
-                    {
-                        using var resized = ResizeFrame(frame, vw, vh);
-                        resized.CopyTo(new Mat(canvas, new Rect(i * vw, 0, vw, vh)));
-                    }
+                    var roi = new Mat(canvas, new Rect(i * vw, 0, vw, vh));
+                    buffers[i].Frame.CopyTo(roi);
                 }
                 break;
 
-            case Layout.Top1Bottom2 when videos.Count == 3:
-                // Video 1: center top
-                DrawVideoToRegion(canvas, captures[0], vw, vh, (int)(vw * 0.5), 0, vw, vh);
-                // Video 2: bottom left
-                DrawVideoToRegion(canvas, captures[1], vw, vh, 0, vh, vw, vh);
-                // Video 3: bottom right
-                DrawVideoToRegion(canvas, captures[2], vw, vh, vw, vh, vw, vh);
+            case Layout.Top1Bottom2 when buffers.Count == 3:
+                CopyToRegion(canvas, buffers[0].Frame, (int)(vw * 0.5), 0, vw, vh);
+                CopyToRegion(canvas, buffers[1].Frame, 0, vh, vw, vh);
+                CopyToRegion(canvas, buffers[2].Frame, vw, vh, vw, vh);
                 break;
 
-            case Layout.Top2Bottom1 when videos.Count == 3:
-                // Video 1: top left
-                DrawVideoToRegion(canvas, captures[0], vw, vh, 0, 0, vw, vh);
-                // Video 2: top right
-                DrawVideoToRegion(canvas, captures[1], vw, vh, vw, 0, vw, vh);
-                // Video 3: center bottom
-                DrawVideoToRegion(canvas, captures[2], vw, vh, (int)(vw * 0.5), vh, vw, vh);
+            case Layout.Top2Bottom1 when buffers.Count == 3:
+                CopyToRegion(canvas, buffers[0].Frame, 0, 0, vw, vh);
+                CopyToRegion(canvas, buffers[1].Frame, vw, 0, vw, vh);
+                CopyToRegion(canvas, buffers[2].Frame, (int)(vw * 0.5), vh, vw, vh);
                 break;
 
-            case Layout.Grid4 when videos.Count == 4:
+            case Layout.Grid4 when buffers.Count == 4:
                 for (int i = 0; i < 4; i++)
                 {
                     int col = i % 2;
                     int row = i / 2;
-                    DrawVideoToRegion(canvas, captures[i], vw, vh, col * vw, row * vh, vw, vh);
+                    CopyToRegion(canvas, buffers[i].Frame, col * vw, row * vh, vw, vh);
                 }
                 break;
 
             default: // Vertical
-                for (int i = 0; i < videos.Count; i++)
+                for (int i = 0; i < buffers.Count; i++)
                 {
-                    DrawVideoToRegion(canvas, captures[i], vw, vh, 0, i * vh, vw, vh);
+                    CopyToRegion(canvas, buffers[i].Frame, 0, i * vh, vw, vh);
                 }
                 break;
         }
     }
 
-    private static void DrawVideoToRegion(
-        Mat canvas, VideoCapture cap, int vw, int vh,
-        int x, int y, int drawW, int drawH)
+    /// <summary>
+    /// Copy a frame to a specific region on the canvas.
+    /// </summary>
+    private static void CopyToRegion(
+        Mat canvas, Mat frame, int x, int y, int drawW, int drawH)
     {
-        using var frame = new Mat();
-        if (cap.Read(frame) && !frame.Empty())
+        var roi = new Mat(canvas, new Rect(
+            Math.Max(0, x),
+            Math.Max(0, y),
+            Math.Min(drawW, canvas.Width - Math.Max(0, x)),
+            Math.Min(drawH, canvas.Height - Math.Max(0, y))
+        ));
+        frame.CopyTo(roi);
+    }
+
+    /// <summary>
+    /// Calculate canvas dimensions based on layout and video count.
+    /// </summary>
+    private static (int canvasW, int canvasH) CalculateCanvasSize(
+        Layout layout, int videoCount, int vw, int vh)
+    {
+        return layout switch
         {
-            using var resized = ResizeFrame(frame, drawW, drawH);
-            var roi = new Mat(canvas, new Rect(
-                Math.Max(0, x),
-                Math.Max(0, y),
-                Math.Min(drawW, canvas.Width - Math.Max(0, x)),
-                Math.Min(drawH, canvas.Height - Math.Max(0, y))
-            ));
-            resized.CopyTo(roi);
-        }
+            Layout.Horizontal => (vw * videoCount, vh),
+            Layout.Top1Bottom2 when videoCount == 3 => (vw * 2, vh * 2),
+            Layout.Top2Bottom1 when videoCount == 3 => (vw * 2, vh * 2),
+            Layout.Grid4 when videoCount == 4 => (vw * 2, vh * 2),
+            _ => (vw, vh * videoCount) // Vertical default
+        };
     }
 
     private static Mat ResizeFrame(Mat frame, int targetW, int targetH)
@@ -261,6 +377,38 @@ public static class ExportService
         var resized = new Mat();
         Cv2.Resize(frame, resized, new Size(targetW, targetH));
         return resized;
+    }
+
+    /// <summary>
+    /// Run FFmpeg encoding asynchronously as an external process.
+    /// </summary>
+    private static async Task RunFfmpegAsync(
+        int targetFps, string tempDir, string outputPath,
+        Action<string>? onProgress, CancellationToken ct)
+    {
+        string ffmpegPath = FindFfmpeg();
+
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            Arguments = $"-framerate {targetFps} -i \"{tempDir}/frame%05d.jpg\" " +
+                       $"-c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p " +
+                       $"-movflags +faststart \"{outputPath}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true
+        };
+
+        using var process = System.Diagnostics.Process.Start(psi);
+        if (process is not null)
+        {
+            await process.WaitForExitAsync(ct);
+            if (process.ExitCode != 0)
+            {
+                string error = await process.StandardError.ReadToEndAsync(ct);
+                throw new Exception($"FFmpeg错误: {error}");
+            }
+        }
     }
 
     private static string FindFfmpeg()
@@ -271,7 +419,9 @@ public static class ExportService
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ffmpeg.exe"),
             "ffmpeg",
             @"C:\ffmpeg\bin\ffmpeg.exe",
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "ffmpeg", "bin", "ffmpeg.exe")
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "ffmpeg", "bin", "ffmpeg.exe")
         ];
 
         foreach (var p in paths)

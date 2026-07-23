@@ -8,6 +8,9 @@ import com.chronosync.models.VideoInfo
 import com.chronosync.models.TimerRegion
 import com.chronosync.models.CalibrationPoint
 import com.chronosync.models.OffsetResult
+import com.chronosync.ui.steps.Step1VideoSelectionFragment
+import com.chronosync.ui.steps.Step2RegionFragment
+import com.chronosync.ui.steps.Step3AnalysisFragment
 
 /**
  * Main Activity hosting the 3-step workflow.

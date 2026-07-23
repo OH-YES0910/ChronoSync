@@ -5,11 +5,19 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.media.*
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.media.MediaExtractor
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
 import com.chronosync.models.VideoInfo
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.io.File
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
@@ -21,11 +29,18 @@ import java.util.*
  * adapted for Android native APIs instead of ffmpeg.wasm.
  *
  * Supports layouts: horizontal, vertical, top1-bottom2, top2-bottom1, grid-4
+ *
+ * Parallelism:
+ * - Producer: parallel frame extraction from all videos via async/await with Semaphore(4)
+ * - Consumer: sequential encoding from a Channel<Bitmap> pipeline
+ * - Dispatchers.IO for file I/O, Dispatchers.Default for CPU work
  */
 class VideoExporter(private val context: Context) {
 
     companion object {
         private const val MAX_CANVAS_PIXELS = 8_000_000
+        /** Number of composite frames the producer can buffer ahead of the encoder. */
+        private const val FRAME_BUFFER_CAPACITY = 10
     }
 
     data class ExportConfig(
@@ -42,6 +57,12 @@ class VideoExporter(private val context: Context) {
         TOP2_BOTTOM1,    // 3 videos: 2 top, 1 bottom
         GRID_4           // 4 videos: 2x2 grid
     }
+
+    /** Result from per-video parallel frame extraction. */
+    private data class VideoFrameResult(
+        val videoIndex: Int,
+        val hasData: Boolean
+    )
 
     /**
      * Export synchronized videos to MP4.
@@ -116,7 +137,7 @@ class VideoExporter(private val context: Context) {
 
             // Create MediaCodec + MediaMuxer
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, canvasW, canvasH).apply {
-                setInteger(MediaFormat.KEY_BITRATE, bitrate.toInt())
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate.toInt())
                 setInteger(MediaFormat.KEY_FRAME_RATE, config.fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
                 setInteger(
@@ -153,75 +174,75 @@ class VideoExporter(private val context: Context) {
                 (0 until extractor.trackCount).firstOrNull { i ->
                     extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)
                         ?.startsWith("video/") == true
-            } ?: -1
+                } ?: -1
             }
 
             val frameDurationUs = (1_000_000.0 / config.fps).toLong()
             var presentationTimeUs = 0L
 
-            // Process frames
-            for (frameIdx in 0 until totalFrames) {
+            // Semaphore limits concurrent extractions to avoid resource exhaustion
+            val frameSemaphore = Semaphore(4)
+
+            // ── Producer: parallel extraction + sequential composition ────────
+            val compositeChannel = Channel<Bitmap>(capacity = FRAME_BUFFER_CAPACITY)
+
+            val producerJob = launch(Dispatchers.Default) {
+                try {
+                    for (frameIdx in 0 until totalFrames) {
+                        ensureActive()
+
+                        val currentTime = exportStartTime + frameIdx * frameInterval
+
+                        if (frameIdx % (config.fps * 2) == 0 || frameIdx == totalFrames - 1) {
+                            val pct = (frameIdx.toFloat() / totalFrames * 100).toInt()
+                            onProgress("Extracting: $pct% | Frame $frameIdx/$totalFrames")
+                        }
+
+                        // Parallel frame extraction from ALL videos concurrently
+                        val extractionResults = coroutineScope {
+                            videos.mapIndexed { i, (video, _) ->
+                                async {
+                                    frameSemaphore.withPermit {
+                                        withContext(Dispatchers.IO) {
+                                            extractVideoFrame(
+                                                extractor = extractors[i],
+                                                videoIndex = i,
+                                                currentTime = currentTime,
+                                                offset = offsets[video.id] ?: 0.0,
+                                                durationMs = durationMs,
+                                                track = videoTracks[i]
+                                            )
+                                        }
+                                    }
+                                }
+                            }.awaitAll()
+                        }
+
+                        // Sequential composition onto a single canvas
+                        val composite = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
+                        canvas.setBitmap(composite)
+                        canvas.drawColor(Color.BLACK)
+
+                        for (result in extractionResults) {
+                            drawVideoFrame(
+                                canvas, paint, result,
+                                totalVideos = videos.size,
+                                vw = vw, vh = vh,
+                                canvasW = canvasW, canvasH = canvasH,
+                                layout = config.layout
+                            )
+                        }
+
+                        compositeChannel.send(composite)
+                    }
+                } finally {
+                    compositeChannel.close()
+                }
+            }
+
+            // ── Consumer: sequential encoding from channel ────────────────────
+            for (composite in compositeChannel) {
                 ensureActive()
-
-                val currentTime = exportStartTime + frameIdx * frameInterval
-
-                if (frameIdx % (config.fps * 2) == 0 || frameIdx == totalFrames - 1) {
-                    val pct = (frameIdx.toFloat() / totalFrames * 100).toInt()
-                    onProgress("Encoding: $pct% | Frame $frameIdx/$totalFrames")
-                }
-
-                // Seek all extractors to the right time
-                for ((i, extractor) in extractors.withIndex()) {
-                    val videoId = videos[i].first.id
-                    val offset = offsets[videoId] ?: 0.0
-                    val targetTimeUs = ((currentTime + offset) * 1_000_000).toLong()
-                        .coerceIn(0, durationMs * 1000)
-
-                    val track = videoTracks[i]
-                    if (track >= 0) {
-                        extractor.seekTo(targetTimeUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                    }
-                }
-
-                // Create bitmap for compositing
-                val bitmap = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
-                canvas.setBitmap(bitmap)
-                canvas.drawColor(Color.BLACK)
-
-                // Draw each video to canvas based on layout
-                for ((i, _) in videos.withIndex()) {
-                    val track = videoTracks[i]
-                    if (track < 0) continue
-
-                    val buffer = ByteBuffer.allocate(1024 * 1024)
-                    val bufferInfo = MediaCodec.BufferInfo()
-                    var sampleSize = extractors[i].readSampleData(buffer, 0)
-
-                    if (sampleSize > 0) {
-                        // Decode frame (simplified - in production would use MediaCodec decoder)
-                        // For now, draw a placeholder rectangle
-                        val color = when (i) {
-                            0 -> Color.parseColor("#FF6B35")
-                            1 -> Color.parseColor("#4A9EFF")
-                            2 -> Color.parseColor("#2EAA6F")
-                            else -> Color.parseColor("#E74C3C")
-                        }
-                        paint.color = color
-
-                        val (x, y, w, h) = calculateLayoutPosition(i, videos.size, vw, vh, canvasW, canvasH, config.layout)
-                        canvas.drawRect(x.toFloat(), y.toFloat(), (x + w).toFloat(), (y + h).toFloat(), paint)
-
-                        // Draw video number
-                        val textPaint = Paint().apply {
-                            this.color = Color.WHITE
-                            textSize = 24f
-                            isAntiAlias = true
-                        }
-                        canvas.drawText("${i + 1}", x + w / 2f - 6, y + h / 2f + 8, textPaint)
-
-                        extractors[i].advance()
-                    }
-                }
 
                 // Encode frame
                 val inputBufferIndex = encoder.dequeueInputBuffer(10_000)
@@ -230,7 +251,7 @@ class VideoExporter(private val context: Context) {
                     inputBuffer?.clear()
 
                     // Convert bitmap to YUV and write to buffer
-                    val yuvData = bitmapToNV21(bitmap)
+                    val yuvData = bitmapToNV21(composite)
                     inputBuffer?.put(yuvData)
 
                     encoder.queueInputBuffer(
@@ -241,10 +262,14 @@ class VideoExporter(private val context: Context) {
                 }
 
                 // Drain encoder output
-                drainEncoder(encoder, muxer, trackIndex, muxerStarted)
+                val drain = drainEncoder(encoder, muxer, trackIndex, muxerStarted)
+                trackIndex = drain.first
+                muxerStarted = drain.second
 
-                bitmap.recycle()
+                composite.recycle()
             }
+
+            producerJob.join()
 
             // Signal end of stream
             val inputBufferIndex = encoder.dequeueInputBuffer(10_000)
@@ -276,12 +301,83 @@ class VideoExporter(private val context: Context) {
         }
     }
 
+    /**
+     * Extract a frame from a single video at the given time.
+     * Thread-safe: operates on one dedicated MediaExtractor instance per video.
+     */
+    private fun extractVideoFrame(
+        extractor: MediaExtractor,
+        videoIndex: Int,
+        currentTime: Double,
+        offset: Double,
+        durationMs: Long,
+        track: Int
+    ): VideoFrameResult {
+        if (track < 0) return VideoFrameResult(videoIndex, hasData = false)
+
+        val targetTimeUs = ((currentTime + offset) * 1_000_000).toLong()
+            .coerceIn(0, durationMs * 1000)
+        extractor.seekTo(targetTimeUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+
+        val buffer = ByteBuffer.allocate(1024 * 1024)
+        val sampleSize = extractor.readSampleData(buffer, 0)
+
+        return if (sampleSize > 0) {
+            extractor.advance()
+            VideoFrameResult(videoIndex, hasData = true)
+        } else {
+            VideoFrameResult(videoIndex, hasData = false)
+        }
+    }
+
+    /**
+     * Draw a single video's placeholder frame onto the compositing canvas.
+     */
+    private fun drawVideoFrame(
+        canvas: Canvas,
+        paint: Paint,
+        result: VideoFrameResult,
+        totalVideos: Int,
+        vw: Int,
+        vh: Int,
+        canvasW: Int,
+        canvasH: Int,
+        layout: Layout
+    ) {
+        if (!result.hasData) return
+
+        val color = when (result.videoIndex) {
+            0 -> Color.parseColor("#FF6B35")
+            1 -> Color.parseColor("#4A9EFF")
+            2 -> Color.parseColor("#2EAA6F")
+            else -> Color.parseColor("#E74C3C")
+        }
+        paint.color = color
+
+        val (x, y, w, h) = calculateLayoutPosition(
+            result.videoIndex, totalVideos, vw, vh, canvasW, canvasH, layout
+        )
+        canvas.drawRect(x.toFloat(), y.toFloat(), (x + w).toFloat(), (y + h).toFloat(), paint)
+
+        // Draw video number
+        val textPaint = Paint().apply {
+            this.color = Color.WHITE
+            textSize = 24f
+            isAntiAlias = true
+        }
+        canvas.drawText("${result.videoIndex + 1}", x + w / 2f - 6, y + h / 2f + 8, textPaint)
+    }
+
+    /**
+     * Drain encoder output buffers into the muxer.
+     * @return Pair of (updated trackIndex, whether muxer has been started)
+     */
     private fun drainEncoder(
         encoder: MediaCodec,
         muxer: MediaMuxer,
         trackIndex: Int,
         muxerStarted: Boolean
-    ): Int {
+    ): Pair<Int, Boolean> {
         var currentIndex = trackIndex
         var started = muxerStarted
         val bufferInfo = MediaCodec.BufferInfo()
@@ -312,7 +408,7 @@ class VideoExporter(private val context: Context) {
                 }
             }
         }
-        return currentIndex
+        return Pair(currentIndex, started)
     }
 
     private fun calculateLayoutPosition(

@@ -1,1 +1,17 @@
 ﻿node_modules/
+
+# Android
+ChronoSync.Android/.gradle/
+ChronoSync.Android/app/build/
+ChronoSync.Android/build/
+ChronoSync.Android/local.properties
+
+# Windows
+ChronoSync.Windows/bin/
+ChronoSync.Windows/obj/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user

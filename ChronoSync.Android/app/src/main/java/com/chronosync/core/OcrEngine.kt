@@ -2,7 +2,7 @@ package com.chronosync.core
 
 import android.graphics.Bitmap
 import com.chronosync.models.TimerRegion
-import org.tesseract.android.TessBaseAPI
+import com.googlecode.tesseract.android.TessBaseAPI
 import java.io.File
 import android.content.Context
 

@@ -2,6 +2,7 @@ package com.chronosync.ui.steps
 
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View

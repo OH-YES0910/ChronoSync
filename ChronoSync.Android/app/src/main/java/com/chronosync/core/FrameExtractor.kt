@@ -2,26 +2,29 @@ package com.chronosync.core
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import com.chronosync.models.CalibrationPoint
 import com.chronosync.models.TimerRegion
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
-import kotlin.math.abs
-import kotlin.math.floor
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Frame extraction from video files using MediaCodec.
  * 100% port of web version's extractFrames (lines 1569-1677).
+ *
+ * Parallelism:
+ * - All sample times generated upfront
+ * - All frames extracted in parallel via async/await with Semaphore(4)
+ * - Each parallel task opens its own MediaMetadataRetriever (not thread-safe)
+ * - Mutex serializes OCR calls (TessBaseAPI is not thread-safe)
  *
  * - Random sampling, each video needs at least 3 valid calibration points (MIN_CALIB_POINTS=3)
  * - Max 30 frames (MAX_SAMPLES=30)
@@ -52,87 +55,147 @@ class FrameExtractor(private val context: Context) {
         onProgress: (Int) -> Unit = {}
     ): List<CalibrationPoint> = withContext(Dispatchers.Default) {
         val calibPoints = mutableListOf<CalibrationPoint>()
-        val usedTimes = mutableSetOf<Int>()
 
-        val retriever = MediaMetadataRetriever()
+        // Use a shared retriever for metadata only (released before parallel extraction)
+        val metaRetriever = MediaMetadataRetriever()
         try {
-            retriever.setDataSource(context, videoUri)
+            metaRetriever.setDataSource(context, videoUri)
 
             // Get video duration
-            val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            val durationStr = metaRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             val duration = (durationStr?.toDoubleOrNull() ?: 0.0) / 1000.0
             if (duration <= 0) return@withContext emptyList()
 
             // Get video dimensions
-            val widthStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-            val heightStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            val widthStr = metaRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            val heightStr = metaRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
             val vw = widthStr?.toIntOrNull() ?: 0
             val vh = heightStr?.toIntOrNull() ?: 0
             if (vw <= 0 || vh <= 0) return@withContext emptyList()
 
+            metaRetriever.release()
+
             val usableStart = duration * 0.05
             val usableEnd = duration * 0.95
 
-            var frameIndex = 0
-            while (frameIndex < MAX_SAMPLES && calibPoints.size < MIN_CALIB_POINTS) {
-                // EnsureActive check for coroutine cancellation
-                ensureActive()
-
-                // Random time within usable range (matching web version)
-                var time: Double? = null
-                for (attempt in 0 until 200) {
-                    val t = usableStart + Random.nextDouble() * (usableEnd - usableStart)
-                    val key = (t * 1000).roundToInt()
-                    if (key !in usedTimes) {
-                        usedTimes.add(key)
-                        time = t
-                        break
-                    }
+            // Generate all sample times upfront (matching web version's random sampling)
+            val sampleTimes = mutableListOf<Double>()
+            val usedTimes = mutableSetOf<Int>()
+            for (attempt in 0 until MAX_SAMPLES * 10) {
+                val t = usableStart + Random.nextDouble() * (usableEnd - usableStart)
+                val key = (t * 1000).roundToInt()
+                if (key !in usedTimes) {
+                    usedTimes.add(key)
+                    sampleTimes.add(t)
+                    if (sampleTimes.size >= MAX_SAMPLES) break
                 }
-                if (time == null) {
-                    frameIndex++
-                    continue // All time points used
-                }
+            }
 
-                // Extract frame at target time using MediaCodec
-                val bitmap = extractFrameAtTime(retriever, time, vw, vh)
-                if (bitmap != null) {
-                    // Try OCR on this frame
-                    var result = ocrEngine.readTimerValue(bitmap, region, vw, vh)
+            if (sampleTimes.isEmpty()) return@withContext emptyList()
 
-                    // If failed, retry at time + 0.05s (matching web version)
-                    if (result.value == null) {
-                        val retryTime = min(time + 0.05, duration - 0.01)
-                        val retryBitmap = extractFrameAtTime(retriever, retryTime, vw, vh)
-                        if (retryBitmap != null) {
-                            val retry = ocrEngine.readTimerValue(retryBitmap, region, vw, vh)
-                            if (retry.value != null) {
-                                result = retry
-                                time = retryTime
+            // Concurrency limits
+            val extractionSemaphore = Semaphore(4)    // parallel bitmap extraction
+            val ocrMutex = Mutex()                     // serialize TessBaseAPI calls (not thread-safe)
+            val completedCount = AtomicInteger(0)
+
+            // Extract ALL frames in parallel — each task opens its own MediaMetadataRetriever
+            val extractionResults = coroutineScope {
+                sampleTimes.map { time ->
+                    async {
+                        extractionSemaphore.withPermit {
+                            extractAndOcr(
+                                videoUri = videoUri,
+                                time = time,
+                                duration = duration,
+                                region = region,
+                                ocrEngine = ocrEngine,
+                                ocrMutex = ocrMutex,
+                                vw = vw,
+                                vh = vh
+                            ).also {
+                                val count = completedCount.incrementAndGet()
+                                onProgress(count)
                             }
-                            retryBitmap.recycle()
                         }
                     }
-
-                    onProgress(frameIndex + 1)
-
-                    if (result.value != null) {
-                        calibPoints.add(CalibrationPoint(videoTime = time, timerValue = result.value))
-                    }
-                    bitmap.recycle()
-                }
-
-                frameIndex++
+                }.awaitAll()
             }
+
+            // Collect valid results, sort by videoTime, take first MIN_CALIB_POINTS
+            calibPoints.addAll(
+                extractionResults
+                    .filterNotNull()
+                    .sortedBy { it.videoTime }
+                    .take(MIN_CALIB_POINTS)
+            )
+
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+
+        calibPoints
+    }
+
+    /**
+     * Extract a single frame and run OCR on it. Each call opens its own
+     * MediaMetadataRetriever so it is safe to run from parallel coroutines.
+     *
+     * @return CalibrationPoint if OCR succeeded, null otherwise
+     */
+    private suspend fun extractAndOcr(
+        videoUri: Uri,
+        time: Double,
+        duration: Double,
+        region: TimerRegion,
+        ocrEngine: OcrEngine,
+        ocrMutex: Mutex,
+        vw: Int,
+        vh: Int
+    ): CalibrationPoint? {
+        // Each parallel task opens its own MediaMetadataRetriever (not thread-safe)
+        val retriever = MediaMetadataRetriever()
+        return try {
+            withContext(Dispatchers.IO) {
+                retriever.setDataSource(context, videoUri)
+            }
+
+            // Extract frame at target time
+            val bitmap = extractFrameAtTime(retriever, time) ?: return null
+
+            // OCR — serialized via mutex (TessBaseAPI uses JNI, not thread-safe)
+            var result = ocrMutex.withLock {
+                ocrEngine.readTimerValue(bitmap, region, vw, vh)
+            }
+            var actualTime = time
+
+            // If failed, retry at time + 0.05s (matching web version)
+            if (result.value == null) {
+                val retryTime = min(time + 0.05, duration - 0.01)
+                val retryBitmap = extractFrameAtTime(retriever, retryTime)
+                if (retryBitmap != null) {
+                    val retry = ocrMutex.withLock {
+                        ocrEngine.readTimerValue(retryBitmap, region, vw, vh)
+                    }
+                    if (retry.value != null) {
+                        result = retry
+                        actualTime = retryTime
+                    }
+                    retryBitmap.recycle()
+                }
+            }
+
+            bitmap.recycle()
+
+            result.value?.let { timerValue ->
+                CalibrationPoint(videoTime = actualTime, timerValue = timerValue)
+            }
+        } catch (e: Exception) {
+            null
         } finally {
             try {
                 retriever.release()
             } catch (_: Exception) {}
         }
-
-        calibPoints
     }
 
     /**
@@ -140,9 +203,7 @@ class FrameExtractor(private val context: Context) {
      */
     private fun extractFrameAtTime(
         retriever: MediaMetadataRetriever,
-        timeSeconds: Double,
-        width: Int,
-        height: Int
+        timeSeconds: Double
     ): Bitmap? {
         return try {
             val timeUs = (timeSeconds * 1_000_000).toLong()
