@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@color/background">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Step 3: Analysis &amp; Sync"
+        android:textSize="24sp"
+        android:textColor="@color/text_primary"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <!-- Progress -->
+    <com.google.android.material.progressindicator.LinearProgressIndicator
+        android:id="@+id/progressBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:max="100"
+        android:progress="0" />
+
+    <TextView
+        android:id="@+id/analysisStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Analyzing..."
+        android:textSize="12sp"
+        android:textColor="@color/text_secondary"
+        android:layout_marginBottom="8dp" />
+
+    <!-- Offset display -->
+    <TextView
+        android:id="@+id/offsetDisplay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="11sp"
+        android:textColor="@color/accent"
+        android:layout_marginBottom="8dp"
+        android:maxLines="2"
+        android:ellipsize="end" />
+
+    <!-- Video container -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginBottom="8dp">
+
+        <LinearLayout
+            android:id="@+id/videoContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+    </ScrollView>
+
+    <!-- Playback controls -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="8dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSyncPlay"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Play"
+            android:layout_marginEnd="12dp" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/timeSlider"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="100"
+            android:stepSize="0.1" />
+
+        <TextView
+            android:id="@+id/timeDisplay"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0.0s"
+            android:textSize="12sp"
+            android:textColor="@color/text_primary"
+            android:layout_marginStart="8dp" />
+
+    </LinearLayout>
+
+    <!-- Layout selection -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Export Layout:"
+        android:textSize="12sp"
+        android:textColor="@color/text_secondary"
+        android:layout_marginBottom="4dp" />
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/layoutVertical"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Vertical"
+                android:textSize="11sp"
+                android:layout_marginEnd="4dp"
+                style="@style/Widget.Material3.Button.OutlinedButton" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/layoutHorizontal"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Horizontal"
+                android:textSize="11sp"
+                android:layout_marginEnd="4dp"
+                style="@style/Widget.Material3.Button.OutlinedButton" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/layoutTop1Bottom2"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="1+2"
+                android:textSize="11sp"
+                android:layout_marginEnd="4dp"
+                style="@style/Widget.Material3.Button.OutlinedButton" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/layoutTop2Bottom1"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="2+1"
+                android:textSize="11sp"
+                android:layout_marginEnd="4dp"
+                style="@style/Widget.Material3.Button.OutlinedButton" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/layoutGrid4"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Grid"
+                android:textSize="11sp"
+                style="@style/Widget.Material3.Button.OutlinedButton" />
+
+        </LinearLayout>
+
+    </HorizontalScrollView>
+
+    <!-- Export -->
+    <TextView
+        android:id="@+id/exportProgress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="11sp"
+        android:textColor="@color/text_secondary"
+        android:layout_marginBottom="8dp"
+        android:maxLines="2" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnBack"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Back"
+            android:layout_marginEnd="8dp"
+            style="@style/Widget.Material3.Button.OutlinedButton" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnExport"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Export MP4" />
+
+    </LinearLayout>
+
+</LinearLayout>

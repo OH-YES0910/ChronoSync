@@ -1,0 +1,95 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Users\\houjia\\Documents\\GitHub\\ChronoSync\\ChronoSync.Windows\\ChronoSync.Windows.csproj": {}
+  },
+  "projects": {
+    "C:\\Users\\houjia\\Documents\\GitHub\\ChronoSync\\ChronoSync.Windows\\ChronoSync.Windows.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\houjia\\Documents\\GitHub\\ChronoSync\\ChronoSync.Windows\\ChronoSync.Windows.csproj",
+        "projectName": "ChronoSync.Windows",
+        "projectPath": "C:\\Users\\houjia\\Documents\\GitHub\\ChronoSync\\ChronoSync.Windows\\ChronoSync.Windows.csproj",
+        "packagesPath": "C:\\Users\\houjia\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\houjia\\Documents\\GitHub\\ChronoSync\\ChronoSync.Windows\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\houjia\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "CommunityToolkit.Mvvm": {
+              "target": "Package",
+              "version": "[8.2.2, )"
+            },
+            "FFMpegCore": {
+              "target": "Package",
+              "version": "[5.1.0, )"
+            },
+            "Microsoft.Xaml.Behaviors.Wpf": {
+              "target": "Package",
+              "version": "[1.1.77, )"
+            },
+            "OpenCvSharp4": {
+              "target": "Package",
+              "version": "[4.9.0.20240103, )"
+            },
+            "OpenCvSharp4.runtime.win": {
+              "target": "Package",
+              "version": "[4.9.0.20240103, )"
+            },
+            "Tesseract": {
+              "target": "Package",
+              "version": "[5.2.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            },
+            "Microsoft.WindowsDesktop.App.WPF": {
+              "privateAssets": "none"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\dotnet\\sdk\\8.0.423/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

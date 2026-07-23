@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@color/background">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Step 1: Select Videos"
+        android:textSize="24sp"
+        android:textColor="@color/text_primary"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Select 2-4 video files (MP4, WebM, MOV)"
+        android:textSize="14sp"
+        android:textColor="@color/text_secondary"
+        android:layout_marginBottom="16dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnSelectVideo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Select Videos"
+        android:layout_marginBottom="16dp"
+        style="@style/Widget.Material3.Button.TonalButton" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/videoList"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/videoCount"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0/4 videos selected"
+        android:textSize="12sp"
+        android:textColor="@color/text_secondary"
+        android:layout_marginBottom="16dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnNext"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Next: Select Regions"
+        android:enabled="false" />
+
+</LinearLayout>

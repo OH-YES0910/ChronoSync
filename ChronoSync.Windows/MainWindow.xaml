@@ -1,0 +1,434 @@
+﻿<Window x:Class="ChronoSync.Windows.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:ChronoSync.Windows.ViewModels"
+        xmlns:local="clr-namespace:ChronoSync.Windows"
+        xmlns:converters="clr-namespace:ChronoSync.Windows.Converters"
+        mc:Ignorable="d"
+        Title="ChronoSync - 视频同步对比工具" Height="800" Width="1200"
+        WindowStartupLocation="CenterScreen"
+        MinHeight="600" MinWidth="900">
+
+    <Window.DataContext>
+        <vm:MainViewModel/>
+    </Window.DataContext>
+
+    <Window.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVis"/>
+        <converters:OffsetToDisplayConverter x:Key="OffsetToDisplay"/>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}" Padding="16,12" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <TextBlock Text="ChronoSync" FontSize="22" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" VerticalAlignment="Center"/>
+                    <TextBlock Text=" - 视频同步对比" FontSize="16" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </StackPanel>
+
+                <!-- Step Indicators -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Style="{StaticResource StepIndicator}"
+                            Background="{Binding CurrentStep, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}"
+                            BorderBrush="{StaticResource PrimaryBrush}" BorderThickness="1" Margin="0,0,4,0">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="20" Height="20" Fill="{StaticResource PrimaryBrush}" Margin="0,0,6,0">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentStep}" Value="1">
+                                                <Setter Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock Text="选择视频" VerticalAlignment="Center" FontWeight="SemiBold"/>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="→" FontSize="16" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" Margin="4,0"/>
+
+                    <Border Style="{StaticResource StepIndicator}">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="20" Height="20" Margin="0,0,6,0">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{StaticResource BorderBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentStep}" Value="2">
+                                                <Setter Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock Text="选择区域" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="→" FontSize="16" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" Margin="4,0"/>
+
+                    <Border Style="{StaticResource StepIndicator}">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="20" Height="20" Margin="0,0,6,0">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{StaticResource BorderBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentStep}" Value="3">
+                                                <Setter Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock Text="分析与播放" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Content Area -->
+        <Grid Grid.Row="1" Margin="16">
+            <!-- Step 1: Video Selection -->
+            <Grid Visibility="{Binding CurrentStep, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
+                <!-- Actually: visible when CurrentStep == 1 -->
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="1">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="2">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="3">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Text="步骤1: 选择视频文件" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
+
+                <!-- Upload Area -->
+                <Border Grid.Row="1" Style="{StaticResource CardBorder}" Margin="0,0,0,16">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+                            <Button Content="添加视频文件" Command="{Binding AddVideosCommand}" Style="{StaticResource PrimaryButton}"/>
+                            <TextBlock Text="支持 MP4, WebM, MOV 格式，最多4个视频" VerticalAlignment="Center" Margin="12,0,0,0"
+                                       Foreground="{StaticResource TextMutedBrush}" FontSize="13"/>
+                        </StackPanel>
+
+                        <!-- Video List -->
+                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Videos}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="6" Padding="12,8" Margin="0,0,0,8"
+                                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBlock Grid.Column="0" Text="🎬" FontSize="18" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding DisplayName}" VerticalAlignment="Center"
+                                                       FontWeight="SemiBold" FontSize="14"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding Duration, StringFormat={}{0:F1}s}"
+                                                       VerticalAlignment="Center" Foreground="{StaticResource TextMutedBrush}"
+                                                       Margin="0,0,12,0"/>
+                                            <Button Grid.Column="3" Content="✕" Style="{StaticResource DangerButton}"
+                                                    Command="{Binding DataContext.RemoveVideoCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                    CommandParameter="{Binding}"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </Border>
+
+                <Button Grid.Row="2" Content="下一步: 选择区域 →" HorizontalAlignment="Right"
+                        Style="{StaticResource PrimaryButton}" Padding="24,10" FontSize="15"
+                        Command="{Binding GoToStepCommand}" CommandParameter="2"
+                        IsEnabled="{Binding CanGoToStep2}"/>
+            </Grid>
+
+            <!-- Step 2: Region Selection -->
+            <Grid>
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="2">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="1">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="3">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Text="步骤2: 识别计时器区域" FontSize="20" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,12">
+                    <Button Content="🔍 一键自动识别所有视频" Command="{Binding AutoDetectAllCommand}"
+                            Style="{StaticResource PrimaryButton}" Margin="0,0,8,0"/>
+                    <TextBlock Text="对每个视频在右上角扫描暖色计时器区域" VerticalAlignment="Center"
+                               Foreground="{StaticResource TextMutedBrush}" FontSize="13"/>
+                </StackPanel>
+
+                <!-- Region panels for each video -->
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Videos}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Style="{StaticResource CardBorder}" Margin="0,0,0,12">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Text="{Binding DisplayName}" FontWeight="Bold" FontSize="15"
+                                                   Margin="0,0,0,8"/>
+
+                                        <!-- Region display -->
+                                        <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}" CornerRadius="4"
+                                                Padding="12,8" Margin="0,0,0,8">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="区域: " Foreground="{StaticResource TextMutedBrush}"/>
+                                                <TextBlock Text="{Binding RegionDisplayText}">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsRegionDetected}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{StaticResource SuccessBrush}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <!-- Status -->
+                                        <TextBlock Grid.Row="2" Text="{Binding StatusText}" FontSize="12"
+                                                   Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+                <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                    <Button Content="← 上一步" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0"
+                            Command="{Binding GoToStepCommand}" CommandParameter="1"/>
+                    <Button Content="下一步: 分析 →" Style="{StaticResource PrimaryButton}" Padding="24,10" FontSize="15"
+                            Command="{Binding GoToStepCommand}" CommandParameter="3"
+                            IsEnabled="{Binding CanGoToStep3}"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Step 3: Analysis & Playback -->
+            <Grid>
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="3">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="1">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding CurrentStep}" Value="2">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Text="步骤3: 分析与同步播放" FontSize="20" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                <!-- Progress Bar -->
+                <Border Grid.Row="1" Style="{StaticResource CardBorder}" Margin="0,0,0,8"
+                        Visibility="{Binding IsAnalyzing, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="{Binding AnalysisStatusText}" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                        <ProgressBar Value="{Binding AnalysisProgressPercent}" Maximum="100" Height="10"/>
+                        <TextBlock Text="{Binding AnalysisProgress}" Foreground="{StaticResource TextMutedBrush}"
+                                   FontSize="12" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Result -->
+                <Border Grid.Row="2" Style="{StaticResource CardBorder}" Margin="0,0,0,8"
+                        Visibility="{Binding AnalysisResultText, Converter={x:Static local:MainWindow.StringToVisConverter}}">
+                    <TextBlock Text="{Binding AnalysisResultText}" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                </Border>
+
+                <!-- Sync Controls (visible when ready) -->
+                <Border Grid.Row="3" Style="{StaticResource CardBorder}" Margin="0,0,0,8"
+                        Visibility="{Binding IsSyncReady, Converter={StaticResource BoolToVis}}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Time slider -->
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="时间:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Slider Width="400" Minimum="0" Maximum="{Binding SyncSliderMax}"
+                                    Value="{Binding SyncSliderValue, Mode=TwoWay}"
+                                    VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TimeDisplayText}" VerticalAlignment="Center" Margin="8,0,0,0"
+                                       FontWeight="SemiBold" FontSize="14"/>
+                        </StackPanel>
+
+                        <!-- Play Button -->
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                            <Button Content="{Binding PlayButtonContent}" Command="{Binding ToggleSyncPlayCommand}"
+                                    Style="{StaticResource PrimaryButton}" Padding="20,10" FontSize="15" Margin="0,0,12,0"/>
+                            <Button Content="重新计算" Command="{Binding RecalculateCommand}"
+                                    Style="{StaticResource SecondaryButton}"/>
+                        </StackPanel>
+
+                        <!-- Video list with offsets -->
+                        <ItemsControl Grid.Row="2" ItemsSource="{Binding Videos}" Margin="0,0,0,8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="4"
+                                            Padding="10,6" Margin="0,0,0,4">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBlock Grid.Column="0" Text="{Binding DisplayName}" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding OffsetDisplay}" VerticalAlignment="Center"
+                                                       Margin="12,0" FontWeight="SemiBold"/>
+                                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                                <Button Content="-0.1s" Style="{StaticResource SecondaryButton}" FontSize="11" Padding="4,2"
+                                                        Command="{Binding DataContext.AdjustOffsetCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="-0.1"/>
+                                                <Button Content="+0.1s" Style="{StaticResource SecondaryButton}" FontSize="11" Padding="4,2" Margin="2,0"
+                                                        Command="{Binding DataContext.AdjustOffsetCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="0.1"/>
+                                                <Button Content="-0.01s" Style="{StaticResource SecondaryButton}" FontSize="11" Padding="4,2"
+                                                        Command="{Binding DataContext.AdjustOffsetCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="-0.01"/>
+                                                <Button Content="+0.01s" Style="{StaticResource SecondaryButton}" FontSize="11" Padding="4,2" Margin="2,0"
+                                                        Command="{Binding DataContext.AdjustOffsetCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="0.01"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
+                </Border>
+
+                <!-- Export Section (visible when ready) -->
+                <Border Grid.Row="4" Style="{StaticResource CardBorder}" Margin="0,0,0,8"
+                        Visibility="{Binding IsSyncReady, Converter={StaticResource BoolToVis}}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Text="导出设置" FontSize="16" FontWeight="Bold" Margin="0,0,0,8"/>
+
+                        <!-- Layout Selection -->
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="布局:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Button Content="竖向" Style="{StaticResource SecondaryButton}" Margin="0,0,4,0"
+                                    Command="{Binding SelectLayoutCommand}" CommandParameter="vertical"/>
+                            <Button Content="横向" Style="{StaticResource SecondaryButton}" Margin="0,0,4,0"
+                                    Command="{Binding SelectLayoutCommand}" CommandParameter="horizontal"/>
+                            <Button Content="上1下2" Style="{StaticResource SecondaryButton}" Margin="0,0,4,0"
+                                    Command="{Binding SelectLayoutCommand}" CommandParameter="top1-bottom2"/>
+                            <Button Content="上2下1" Style="{StaticResource SecondaryButton}" Margin="0,0,4,0"
+                                    Command="{Binding SelectLayoutCommand}" CommandParameter="top2-bottom1"/>
+                            <Button Content="2x2网格" Style="{StaticResource SecondaryButton}"
+                                    Command="{Binding SelectLayoutCommand}" CommandParameter="grid-4"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Orientation="Horizontal">
+                            <Button Content="📹 导出视频" Command="{Binding ExportVideoCommand}"
+                                    Style="{StaticResource PrimaryButton}" Padding="20,10" FontSize="15"
+                                    IsEnabled="{Binding IsExporting, Converter={x:Static local:MainWindow.InvertBoolConverter}}"/>
+                            <TextBlock Text="{Binding ExportProgressText}" VerticalAlignment="Center" Margin="12,0,0,0"
+                                       Foreground="{StaticResource TextMutedBrush}" FontSize="13"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Footer -->
+                <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                    <Button Content="重新选择视频" Command="{Binding ResetAllCommand}"
+                            Style="{StaticResource SecondaryButton}"/>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

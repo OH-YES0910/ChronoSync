@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:padding="12dp"
+    android:background="@color/surface"
+    android:layout_marginBottom="8dp">
+
+    <TextView
+        android:id="@+id/videoIcon"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:text="🎬"
+        android:textSize="18sp"
+        android:gravity="center"
+        android:layout_marginEnd="12dp" />
+
+    <TextView
+        android:id="@+id/videoName"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="video.mp4"
+        android:textSize="14sp"
+        android:textColor="@color/text_primary"
+        android:ellipsize="end"
+        android:maxLines="1" />
+
+    <ImageButton
+        android:id="@+id/btnRemove"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:src="@android:drawable/ic_menu_close_clear_cancel"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="Remove"
+        android:scaleType="centerInside" />
+
+</LinearLayout>

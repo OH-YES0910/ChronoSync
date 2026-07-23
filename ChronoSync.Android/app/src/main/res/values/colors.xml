@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand colors (Orange theme matching web version) -->
+    <color name="primary">#FF6B35</color>
+    <color name="primary_dark">#E55A25</color>
+    <color name="primary_light">#FF8A5C</color>
+    <color name="accent">#FF6B35</color>
+
+    <!-- Background colors -->
+    <color name="background">#121212</color>
+    <color name="surface">#1E1E1E</color>
+    <color name="surface_variant">#2C2C2C</color>
+
+    <!-- Text colors -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#888888</color>
+    <color name="text_muted">#555555</color>
+
+    <!-- Status colors -->
+    <color name="success">#4CAF50</color>
+    <color name="warning">#FFC107</color>
+    <color name="error">#F44336</color>
+    <color name="info">#2196F3</color>
+
+    <!-- Video player colors -->
+    <color name="video_bg">#000000</color>
+    <color name="region_box">#FF6B35</color>
+    <color name="region_fill">#33FF6B35</color>
+
+    <!-- Material Design 3 color scheme -->
+    <color name="md_theme_primary">#FF6B35</color>
+    <color name="md_theme_onPrimary">#FFFFFF</color>
+    <color name="md_theme_primaryContainer">#FFE0D0</color>
+    <color name="md_theme_onPrimaryContainer">#2B0900</color>
+    <color name="md_theme_secondary">#765849</color>
+    <color name="md_theme_onSecondary">#FFFFFF</color>
+    <color name="md_theme_surface">#1C1B1F</color>
+    <color name="md_theme_onSurface">#E6E1E5</color>
+    <color name="md_theme_surfaceVariant">#49454F</color>
+    <color name="md_theme_onSurfaceVariant">#CAC4D0</color>
+    <color name="md_theme_error">#FFB4AB</color>
+    <color name="md_theme_onError">#690005</color>
+</resources>
