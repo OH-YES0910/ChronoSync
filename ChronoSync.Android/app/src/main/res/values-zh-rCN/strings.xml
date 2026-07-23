@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ChronoSync</string>
+    <string name="step1_title">步骤1: 选择视频</string>
+    <string name="step2_title">步骤2: 选择计时器区域</string>
+    <string name="step3_title">步骤3: 分析与同步</string>
+    <string name="select_videos">选择视频</string>
+    <string name="auto_detect">自动识别</string>
+    <string name="auto_detect_all">一键自动识别所有视频</string>
+    <string name="next">下一步</string>
+    <string name="back">上一步</string>
+    <string name="play">播放</string>
+    <string name="pause">暂停</string>
+    <string name="export">导出 MP4</string>
+    <string name="no_region_selected">未选择区域</string>
+    <string name="drag_to_select">在视频帧上拖动鼠标框选计时器区域</string>
+    <string name="analysis_complete">分析完成!</string>
+    <string name="export_complete">导出完成</string>
+    <string name="export_failed">导出失败</string>
+    <string name="random_seek">随机跳转</string>
+    <string name="time_label">时间:</string>
+    <string name="analyzing">正在分析...</string>
+    <string name="please_wait">请稍候</string>
+    <string name="videos_added">已添加 %1$d 个视频</string>
+    <string name="max_videos_warning">最多支持 4 个视频</string>
+    <string name="no_video_selected">请先选择视频</string>
+    <string name="region_required">请先选择所有视频的计时器区域</string>
+    <string name="error_loading_video">加载视频失败</string>
+    <string name="error_detecting_region">识别区域失败</string>
+    <string name="error_analyzing">分析失败</string>
+</resources>

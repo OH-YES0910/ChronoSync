@@ -5,4 +5,5 @@
     <item name="seekSlider" type="id" />
     <item name="statusText" type="id" />
     <item name="btnAutoDetect" type="id" />
+    <item name="btnRandom" type="id" />
 </resources>

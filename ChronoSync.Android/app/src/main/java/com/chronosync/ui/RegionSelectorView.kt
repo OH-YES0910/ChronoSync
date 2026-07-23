@@ -58,6 +58,19 @@ class RegionSelectorView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
+    // Video frame background
+    private var frameBitmap: Bitmap? = null
+
+    private val bitmapPaint = Paint().apply {
+        isAntiAlias = true
+        isFilterBitmap = true
+    }
+
+    fun setFrameBitmap(bitmap: Bitmap?) {
+        frameBitmap = bitmap
+        invalidate()
+    }
+
     fun setOnRegionSelectedListener(listener: (TimerRegion) -> Unit) {
         onRegionSelected = listener
     }
@@ -70,8 +83,25 @@ class RegionSelectorView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // Draw dark background
+        // Draw dark background (fallback when no bitmap)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+
+        // Draw video frame bitmap scaled to fit, centered
+        frameBitmap?.let { bmp ->
+            val viewW = width.toFloat()
+            val viewH = height.toFloat()
+            val bmpW = bmp.width.toFloat()
+            val bmpH = bmp.height.toFloat()
+
+            val scale = maxOf(viewW / bmpW, viewH / bmpH)
+            val scaledW = bmpW * scale
+            val scaledH = bmpH * scale
+            val left = (viewW - scaledW) / 2f
+            val top = (viewH - scaledH) / 2f
+
+            val dest = RectF(left, top, left + scaledW, top + scaledH)
+            canvas.drawBitmap(bmp, null, dest, bitmapPaint)
+        }
 
         // Draw grid lines for reference
         val gridPaint = Paint().apply {

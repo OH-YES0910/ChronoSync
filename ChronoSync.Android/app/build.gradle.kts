@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.chronosync"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.chronosync"
@@ -13,6 +13,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+        resourceConfigurations += listOf("zh-rCN", "zh", "en")
     }
 
     buildTypes {

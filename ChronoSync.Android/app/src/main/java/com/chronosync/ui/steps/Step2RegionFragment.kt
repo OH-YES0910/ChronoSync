@@ -66,10 +66,39 @@ class Step2RegionFragment : Fragment() {
                 updateNextButton()
             }
 
-            // Setup seek bar
-            seekBar.addOnChangeListener { _, value, fromUser ->
+            // Load initial frame and wire seek slider
+            val videoUri = video.uri
+            lifecycleScope.launch {
+                // Load initial frame at 10% of duration
+                val duration = getVideoDuration(videoUri)
+                val initialTime = duration * 0.1
+                val frame = loadVideoFrame(videoUri, initialTime)
+                frame?.let { regionSelector.setFrameBitmap(it) }
+            }
+
+            // Setup seek bar - load frame at seek position
+            seekBar.addOnChangeListener { slider, value, fromUser ->
                 if (fromUser) {
-                    // Seek video to position (would need ExoPlayer here for actual seeking)
+                    val percent = value.toDouble() / 100.0
+                    lifecycleScope.launch {
+                        val duration = getVideoDuration(videoUri)
+                        val seekTime = duration * percent
+                        val frame = loadVideoFrame(videoUri, seekTime)
+                        frame?.let { regionSelector.setFrameBitmap(it) }
+                    }
+                }
+            }
+
+            // Setup random seek button - load frame at random position
+            val randomBtn = panelView.findViewById<com.google.android.material.button.MaterialButton>(com.chronosync.R.id.btnRandom)
+            randomBtn.setOnClickListener {
+                val randomPercent = (Math.random() * 80 + 10) / 100.0
+                seekBar.value = (randomPercent * 100).toFloat()
+                lifecycleScope.launch {
+                    val duration = getVideoDuration(videoUri)
+                    val seekTime = duration * randomPercent
+                    val frame = loadVideoFrame(videoUri, seekTime)
+                    frame?.let { regionSelector.setFrameBitmap(it) }
                 }
             }
 
@@ -191,6 +220,47 @@ class Step2RegionFragment : Fragment() {
         }
     }
 
+    /**
+     * Load a single frame from the video at the given time position (in seconds).
+     * Returns null on failure. Caller is responsible for recycling the bitmap.
+     */
+    private suspend fun loadVideoFrame(videoUri: Uri, timeSeconds: Double): Bitmap? {
+        return withContext(Dispatchers.Default) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(requireContext(), videoUri)
+                retriever.getFrameAtTime(
+                    (timeSeconds * 1_000_000).toLong(),
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            } finally {
+                try { retriever.release() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /**
+     * Get video duration in seconds, or 0 if unavailable.
+     */
+    private suspend fun getVideoDuration(videoUri: Uri): Double {
+        return withContext(Dispatchers.Default) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(requireContext(), videoUri)
+                val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull() ?: 0L
+                durationMs / 1000.0
+            } catch (e: Exception) {
+                0.0
+            } finally {
+                try { retriever.release() } catch (_: Exception) {}
+            }
+        }
+    }
+
     private fun createVideoPanel(videoId: String, videoName: String, index: Int): View {
         val context = requireContext()
         val panel = android.widget.LinearLayout(context).apply {
@@ -260,16 +330,13 @@ class Step2RegionFragment : Fragment() {
 
         // Random seek button
         val randomBtn = com.google.android.material.button.MaterialButton(context).apply {
+            id = com.chronosync.R.id.btnRandom
             text = "Random"
             layoutParams = android.widget.LinearLayout.LayoutParams(
                 0,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 1f
             )
-        }
-        randomBtn.setOnClickListener {
-            val seekBar = panel.findViewById<com.google.android.material.slider.Slider>(com.chronosync.R.id.seekSlider)
-            seekBar.value = (Math.random() * 80 + 10).toFloat()
         }
         controlsRow.addView(randomBtn)
 

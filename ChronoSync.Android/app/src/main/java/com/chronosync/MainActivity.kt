@@ -1,5 +1,8 @@
 package com.chronosync
 
+import android.content.Context
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
@@ -11,6 +14,7 @@ import com.chronosync.models.OffsetResult
 import com.chronosync.ui.steps.Step1VideoSelectionFragment
 import com.chronosync.ui.steps.Step2RegionFragment
 import com.chronosync.ui.steps.Step3AnalysisFragment
+import java.util.Locale
 
 /**
  * Main Activity hosting the 3-step workflow.
@@ -27,6 +31,16 @@ class MainActivity : AppCompatActivity() {
     val regions = mutableMapOf<String, TimerRegion>()
     val frames = mutableMapOf<String, List<CalibrationPoint>>()
     val offsets = mutableMapOf<String, Double>()
+
+    override fun attachBaseContext(newBase: Context) {
+        // Force Simplified Chinese as default locale for the entire app
+        val config = Configuration(newBase.resources.configuration)
+        val locale = Locale.SIMPLIFIED_CHINESE
+        Locale.setDefault(locale)
+        config.setLocale(locale)
+        val updatedContext = newBase.createConfigurationContext(config)
+        super.attachBaseContext(updatedContext)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,6 +83,17 @@ class MainActivity : AppCompatActivity() {
     fun goToStepClear(step: Int) {
         supportFragmentManager.popBackStack(null, androidx.fragment.app.FragmentManager.POP_BACK_STACK_INCLUSIVE)
         goToStep(step)
+    }
+
+    @Suppress("MissingSuperCall", "DEPRECATION")
+    override fun onBackPressed() {
+        // Android 16 predictive back gesture support
+        if (supportFragmentManager.backStackEntryCount > 1) {
+            supportFragmentManager.popBackStack()
+        } else {
+            // Last fragment - finish activity
+            finish()
+        }
     }
 
     override fun onDestroy() {

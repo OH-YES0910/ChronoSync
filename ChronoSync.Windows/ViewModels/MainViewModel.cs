@@ -119,6 +119,15 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 });
             }
 
+            // Load thumbnails for all new videos (on background thread to avoid UI freeze)
+            _ = Task.Run(() =>
+            {
+                foreach (var video in Videos.Where(v => v.Thumbnail is null))
+                {
+                    Application.Current.Dispatcher.Invoke(() => video.LoadThumbnail());
+                }
+            });
+
             OnPropertyChanged(nameof(CanGoToStep2));
             OnPropertyChanged(nameof(HasVideos));
         }
@@ -142,7 +151,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         CurrentStep = step;
 
-        if (step == 3)
+        if (step == 2)
+        {
+            // Load initial frames for Step 2 video preview
+            _ = Task.Run(() =>
+            {
+                foreach (var video in Videos)
+                {
+                    Application.Current.Dispatcher.Invoke(() =>
+                        video.LoadFrame(video.SliderValue));
+                }
+            });
+        }
+        else if (step == 3)
         {
             _ = AnalyzeVideosAsync();
         }
@@ -372,6 +393,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (_isPlaying) return;
         _currentSyncTime = SyncSliderValue;
         TimeDisplayText = $"{_currentSyncTime:F1}s";
+    }
+
+    /// <summary>
+    /// Called when a video's slider value changes in Step 2.
+    /// Loads the frame at the new position for that video.
+    /// </summary>
+    [RelayCommand]
+    private void VideoSliderChanged(VideoViewModel video)
+    {
+        video.LoadFrame(video.SliderValue);
     }
 
     [RelayCommand]
