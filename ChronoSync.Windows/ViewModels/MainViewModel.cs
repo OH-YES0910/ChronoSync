@@ -134,8 +134,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void GoToStep(int step)
+    private void GoToStep(string stepStr)
     {
+        if (!int.TryParse(stepStr, out int step)) return;
         if (step == 2 && !CanGoToStep2) return;
         if (step == 3 && !CanGoToStep3) return;
 

@@ -6,15 +6,15 @@
     <color name="primary_light">#FF8A5C</color>
     <color name="accent">#FF6B35</color>
 
-    <!-- Background colors -->
-    <color name="background">#121212</color>
-    <color name="surface">#1E1E1E</color>
-    <color name="surface_variant">#2C2C2C</color>
+    <!-- Background colors (Light theme) -->
+    <color name="background">#F5F5F5</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_variant">#F0F0F0</color>
 
     <!-- Text colors -->
-    <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#888888</color>
-    <color name="text_muted">#555555</color>
+    <color name="text_primary">#1A1A1A</color>
+    <color name="text_secondary">#666666</color>
+    <color name="text_muted">#999999</color>
 
     <!-- Status colors -->
     <color name="success">#4CAF50</color>
@@ -27,19 +27,19 @@
     <color name="region_box">#FF6B35</color>
     <color name="region_fill">#33FF6B35</color>
 
-    <!-- Material Design 3 color scheme -->
+    <!-- Material Design 3 color scheme (Light) -->
     <color name="md_theme_primary">#FF6B35</color>
     <color name="md_theme_onPrimary">#FFFFFF</color>
     <color name="md_theme_primaryContainer">#FFE0D0</color>
     <color name="md_theme_onPrimaryContainer">#2B0900</color>
     <color name="md_theme_secondary">#765849</color>
     <color name="md_theme_onSecondary">#FFFFFF</color>
-    <color name="md_theme_surface">#1C1B1F</color>
-    <color name="md_theme_onSurface">#E6E1E5</color>
-    <color name="md_theme_surfaceVariant">#49454F</color>
-    <color name="md_theme_onSurfaceVariant">#CAC4D0</color>
-    <color name="md_theme_error">#FFB4AB</color>
-    <color name="md_theme_onError">#690005</color>
+    <color name="md_theme_surface">#FFFBFE</color>
+    <color name="md_theme_onSurface">#1C1B1F</color>
+    <color name="md_theme_surfaceVariant">#E7E0EC</color>
+    <color name="md_theme_onSurfaceVariant">#49454F</color>
+    <color name="md_theme_error">#BA1A1A</color>
+    <color name="md_theme_onError">#FFFFFF</color>
 
     <!-- Basic colors -->
     <color name="white">#FFFFFF</color>

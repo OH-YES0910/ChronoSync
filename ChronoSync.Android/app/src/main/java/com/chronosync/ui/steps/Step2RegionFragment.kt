@@ -196,7 +196,7 @@ class Step2RegionFragment : Fragment() {
         val panel = android.widget.LinearLayout(context).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(16, 16, 16, 16)
-            setBackgroundColor(android.graphics.Color.parseColor("#1E1E1E"))
+            setBackgroundColor(android.graphics.Color.WHITE)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -208,7 +208,7 @@ class Step2RegionFragment : Fragment() {
         // Video name header
         val header = android.widget.TextView(context).apply {
             text = "Video ${index + 1}: $videoName"
-            setTextColor(android.graphics.Color.WHITE)
+            setTextColor(android.graphics.Color.BLACK)
             textSize = 16f
             setPadding(0, 0, 0, 8)
         }
@@ -279,7 +279,7 @@ class Step2RegionFragment : Fragment() {
         val statusText = android.widget.TextView(context).apply {
             id = com.chronosync.R.id.statusText
             text = "No region selected"
-            setTextColor(android.graphics.Color.parseColor("#888888"))
+            setTextColor(android.graphics.Color.parseColor("#666666"))
             textSize = 12f
             setPadding(0, 4, 0, 0)
         }

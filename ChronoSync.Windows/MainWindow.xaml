@@ -43,13 +43,12 @@
                 <!-- Step Indicators -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Style="{StaticResource StepIndicator}"
-                            Background="{Binding CurrentStep, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}"
                             BorderBrush="{StaticResource PrimaryBrush}" BorderThickness="1" Margin="0,0,4,0">
                         <StackPanel Orientation="Horizontal">
-                            <Ellipse Width="20" Height="20" Fill="{StaticResource PrimaryBrush}" Margin="0,0,6,0">
+                            <Ellipse Width="20" Height="20" Fill="{StaticResource BorderBrush}" Margin="0,0,6,0">
                                 <Ellipse.Style>
                                     <Style TargetType="Ellipse">
-                                        <Setter Property="Fill" Value="{StaticResource PrimaryBrush}"/>
+                                        <Setter Property="Fill" Value="{StaticResource BorderBrush}"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding CurrentStep}" Value="1">
                                                 <Setter Property="Fill" Value="{StaticResource PrimaryBrush}"/>
@@ -108,19 +107,13 @@
         <!-- Content Area -->
         <Grid Grid.Row="1" Margin="16">
             <!-- Step 1: Video Selection -->
-            <Grid Visibility="{Binding CurrentStep, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
-                <!-- Actually: visible when CurrentStep == 1 -->
+            <Grid>
                 <Grid.Style>
                     <Style TargetType="Grid">
+                        <Setter Property="Visibility" Value="Collapsed"/>
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding CurrentStep}" Value="1">
                                 <Setter Property="Visibility" Value="Visible"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding CurrentStep}" Value="2">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding CurrentStep}" Value="3">
-                                <Setter Property="Visibility" Value="Collapsed"/>
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
@@ -189,15 +182,10 @@
             <Grid>
                 <Grid.Style>
                     <Style TargetType="Grid">
+                        <Setter Property="Visibility" Value="Collapsed"/>
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding CurrentStep}" Value="2">
                                 <Setter Property="Visibility" Value="Visible"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding CurrentStep}" Value="1">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding CurrentStep}" Value="3">
-                                <Setter Property="Visibility" Value="Collapsed"/>
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
@@ -277,15 +265,10 @@
             <Grid>
                 <Grid.Style>
                     <Style TargetType="Grid">
+                        <Setter Property="Visibility" Value="Collapsed"/>
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding CurrentStep}" Value="3">
                                 <Setter Property="Visibility" Value="Visible"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding CurrentStep}" Value="1">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                            </DataTrigger>
-                            <DataTrigger Binding="{Binding CurrentStep}" Value="2">
-                                <Setter Property="Visibility" Value="Collapsed"/>
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>

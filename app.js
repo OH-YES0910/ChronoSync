@@ -86,11 +86,33 @@ function renderVideoList() {
   
   container.innerHTML = state.videos.map((v, i) => `
     <div class="video-item">
-      <span class="video-icon">🎬</span>
+      <video class="video-thumb" src="${v.url}" muted preload="metadata" data-id="${v.id}"></video>
       <span class="video-name">${v.name}</span>
       <button class="remove-btn" onclick="removeVideo('${v.id}')">✕</button>
     </div>
   `).join('');
+  
+  // Generate thumbnails for each video
+  container.querySelectorAll('.video-thumb').forEach(video => {
+    video.addEventListener('loadeddata', function() {
+      this.currentTime = 0.1;
+    });
+    video.addEventListener('seeked', function() {
+      // Create canvas thumbnail
+      const canvas = document.createElement('canvas');
+      canvas.width = 80;
+      canvas.height = 45;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(this, 0, 0, 80, 45);
+      this.poster = canvas.toDataURL();
+      this.style.display = 'none';
+      const thumb = document.createElement('img');
+      thumb.className = 'video-thumb-img';
+      thumb.src = canvas.toDataURL();
+      thumb.alt = 'Video thumbnail';
+      this.parentNode.insertBefore(thumb, this);
+    });
+  });
   
   nextBtn1.disabled = state.videos.length < 2;
 }

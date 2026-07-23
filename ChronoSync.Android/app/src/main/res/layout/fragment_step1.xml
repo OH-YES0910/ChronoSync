@@ -30,7 +30,8 @@
         android:layout_height="wrap_content"
         android:text="Select Videos"
         android:layout_marginBottom="16dp"
-        style="@style/Widget.Material3.Button.TonalButton" />
+        android:backgroundTint="@color/primary"
+        android:textColor="@color/white" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/videoList"

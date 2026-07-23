@@ -187,6 +187,22 @@ body {
   font-size: 1.1rem;
 }
 
+.video-thumb {
+  width: 80px;
+  height: 45px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--bg-surface);
+}
+
+.video-thumb-img {
+  width: 80px;
+  height: 45px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: var(--bg-surface);
+}
+
 .video-name {
   flex: 1;
   overflow: hidden;
