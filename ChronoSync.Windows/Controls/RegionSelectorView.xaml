@@ -13,49 +13,56 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Video frame with mouse-drawable region overlay -->
-        <Border Grid.Row="0" Background="#1A1A1A" CornerRadius="4" ClipToBounds="True">
-            <Grid x:Name="FrameHost">
+        <!-- Video frame + overlay. Using Canvas so Canvas.SetLeft/Top + Width/Height work correctly on Rectangles. -->
+        <Border Grid.Row="0" Background="#0A0A0A" CornerRadius="6" ClipToBounds="True"
+                BorderBrush="#222" BorderThickness="1">
+            <Canvas x:Name="FrameHost" Background="Transparent"
+                    ClipToBounds="True"
+                    MouseLeftButtonDown="Overlay_MouseLeftButtonDown"
+                    MouseMove="Overlay_MouseMove"
+                    MouseLeftButtonUp="Overlay_MouseLeftButtonUp"
+                    Cursor="Cross">
                 <Image x:Name="FrameImage" Stretch="Uniform"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        Source="{Binding CurrentFrame, RelativeSource={RelativeSource AncestorType=UserControl}}"/>
-                <Canvas x:Name="OverlayCanvas" Background="Transparent"
-                        Cursor="Cross"
-                        MouseLeftButtonDown="Overlay_MouseLeftButtonDown"
-                        MouseMove="Overlay_MouseMove"
-                        MouseLeftButtonUp="Overlay_MouseLeftButtonUp"/>
+                <Rectangle x:Name="AutoRect"
+                           Stroke="#FF9500" StrokeThickness="2"
+                           StrokeDashArray="5,3"
+                           Fill="#22FF9500"
+                           IsHitTestVisible="False"/>
                 <Rectangle x:Name="SelectedRect"
                            Stroke="#FF3B30" StrokeThickness="2"
                            Fill="#33FF3B30"
-                           Visibility="Collapsed"
                            IsHitTestVisible="False"/>
-                <Rectangle x:Name="AutoRect"
-                           Stroke="#FF9500" StrokeThickness="2"
-                           StrokeDashArray="4,2"
-                           Fill="#22FF9500"
-                           Visibility="Collapsed"
-                           IsHitTestVisible="False"/>
-            </Grid>
+            </Canvas>
         </Border>
 
-        <!-- Seek slider -->
-        <DockPanel Grid.Row="1" Margin="0,8,0,0" LastChildFill="True">
-            <TextBlock DockPanel.Dock="Left" Text="时间:" VerticalAlignment="Center"
+        <!-- Seek slider with time display + random button -->
+        <Grid Grid.Row="1" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="时间" VerticalAlignment="Center"
                        Margin="0,0,8,0" FontSize="12" Foreground="#666"/>
-            <TextBlock x:Name="TimeText" DockPanel.Dock="Right" VerticalAlignment="Center"
-                       Margin="8,0,0,0" FontWeight="SemiBold" MinWidth="60" TextAlignment="Right"/>
-            <Slider x:Name="SeekSlider" Minimum="0" Maximum="100" Value="0"
-                    VerticalAlignment="Center" Margin="4,0"
-                    Thumb.DragCompleted="SeekSlider_DragCompleted"
-                    PreviewMouseLeftButtonUp="SeekSlider_PreviewMouseLeftButtonUp"/>
-        </DockPanel>
+            <Slider x:Name="SeekSlider" Grid.Column="1" Minimum="0" Maximum="100" Value="0"
+                    VerticalAlignment="Center" Margin="0,0,8,0"
+                    ValueChanged="SeekSlider_ValueChanged"
+                    Thumb.DragCompleted="SeekSlider_DragCompleted"/>
+            <TextBlock x:Name="TimeText" Grid.Column="2" VerticalAlignment="Center"
+                       FontWeight="SemiBold" FontSize="12" MinWidth="80" TextAlignment="Right"
+                       Text="0.00s / 0.00s"/>
+            <Button Grid.Column="3" Content="🎲" Click="RandomBtn_Click"
+                    Width="32" Height="28" Margin="6,0,0,0" FontSize="14"
+                    Background="#FF9500" Foreground="White" BorderThickness="0"
+                    ToolTip="随机跳转"/>
+        </Grid>
 
-        <!-- Random button + region info -->
-        <DockPanel Grid.Row="2" Margin="0,4,0,0">
-            <Button DockPanel.Dock="Right" Content="随机跳转" Click="RandomBtn_Click"
-                    Padding="10,4" FontSize="12" Background="#FF9500" Foreground="White" BorderThickness="0"/>
-            <TextBlock x:Name="RegionInfoText" VerticalAlignment="Center" Foreground="#666" FontSize="12"
-                       Text="未选择区域"/>
-        </DockPanel>
+        <!-- Region info text (shows DetectedRegion when no manual selection) -->
+        <TextBlock x:Name="RegionInfoText" Grid.Row="2" VerticalAlignment="Center"
+                   FontSize="12" Margin="0,8,0,0"
+                   Text="未选择区域 — 在视频帧上拖动鼠标框选"/>
     </Grid>
 </UserControl>

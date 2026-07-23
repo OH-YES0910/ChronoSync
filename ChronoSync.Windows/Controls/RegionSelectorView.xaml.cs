@@ -1,8 +1,10 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace ChronoSync.Windows.Controls;
 
@@ -11,14 +13,26 @@ public partial class RegionSelectorView : UserControl
     // Drag state
     private bool _isDragging;
     private Point _dragStartCanvas;
-    private Rect _dragStartSelectedRect; // current SelectedRect in canvas coords before drag
     private double _videoAspect = 16.0 / 9.0;
+
+    // Debounce for slider ValueChanged -> avoid spamming frame extraction during drag
+    private DispatcherTimer? _seekDebounce;
 
     public RegionSelectorView()
     {
         InitializeComponent();
         Loaded += (_, _) => RepositionOverlays();
         SizeChanged += (_, _) => RepositionOverlays();
+
+        _seekDebounce = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(60)
+        };
+        _seekDebounce.Tick += (_, _) =>
+        {
+            _seekDebounce!.Stop();
+            RaiseEvent(new RoutedEventArgs(TimeChangedEvent, CurrentTime));
+        };
     }
 
     #region Dependency Properties
@@ -44,7 +58,7 @@ public partial class RegionSelectorView : UserControl
         {
             view._videoAspect = (double)bmp.PixelWidth / bmp.PixelHeight;
         }
-        view.Dispatcher.BeginInvoke(new Action(view.RepositionOverlays), System.Windows.Threading.DispatcherPriority.Loaded);
+        view.Dispatcher.BeginInvoke(new Action(view.RepositionOverlays), DispatcherPriority.Loaded);
     }
 
     public static readonly DependencyProperty DurationProperty =
@@ -86,7 +100,6 @@ public partial class RegionSelectorView : UserControl
     {
         var view = (RegionSelectorView)d;
         var newVal = (double)e.NewValue;
-        // Only update slider if not actively dragging and differs meaningfully
         if (!view.SeekSlider.IsKeyboardFocusWithin && Math.Abs(view.SeekSlider.Value - newVal) > 0.001)
         {
             view.SeekSlider.Value = Math.Clamp(newVal, view.SeekSlider.Minimum, view.SeekSlider.Maximum);
@@ -281,11 +294,19 @@ public partial class RegionSelectorView : UserControl
 
     private void UpdateRegionInfo()
     {
+        // Show DetectedRegion if set, else SelectedRegion, else hint
+        var detected = AutoDetectedRegion;
         var sel = SelectedRegion;
+
         if (!sel.IsEmpty && sel.Width > 0 && sel.Height > 0)
         {
-            RegionInfoText.Text = $"已选: x={sel.X * 100:F1}% y={sel.Y * 100:F1}% w={sel.Width * 100:F1}% h={sel.Height * 100:F1}%";
+            RegionInfoText.Text = $"已框选: x={sel.X * 100:F1}% y={sel.Y * 100:F1}% w={sel.Width * 100:F1}% h={sel.Height * 100:F1}%";
             RegionInfoText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x3B, 0x30));
+        }
+        else if (!detected.IsEmpty && detected.Width > 0 && detected.Height > 0)
+        {
+            RegionInfoText.Text = $"已识别: x={detected.X * 100:F1}% y={detected.Y * 100:F1}% w={detected.Width * 100:F1}% h={detected.Height * 100:F1}%";
+            RegionInfoText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x95, 0x00));
         }
         else
         {
@@ -304,10 +325,14 @@ public partial class RegionSelectorView : UserControl
         if (videoRect.IsEmpty) return;
 
         _dragStartCanvas = e.GetPosition(FrameHost);
-        _dragStartSelectedRect = NormalizedToCanvas(SelectedRegion);
-
         _isDragging = true;
-        OverlayCanvas.CaptureMouse();
+        FrameHost.CaptureMouse();
+
+        // Initialize SelectedRect at the click point
+        Canvas.SetLeft(SelectedRect, _dragStartCanvas.X);
+        Canvas.SetTop(SelectedRect, _dragStartCanvas.Y);
+        SelectedRect.Width = 0;
+        SelectedRect.Height = 0;
         SelectedRect.Visibility = Visibility.Visible;
         e.Handled = true;
     }
@@ -317,45 +342,48 @@ public partial class RegionSelectorView : UserControl
         if (!_isDragging) return;
 
         var cur = e.GetPosition(FrameHost);
+        // Top-left = min(start, current), width/height = abs(current - start)
         var x = Math.Min(_dragStartCanvas.X, cur.X);
         var y = Math.Min(_dragStartCanvas.Y, cur.Y);
         var w = Math.Abs(cur.X - _dragStartCanvas.X);
         var h = Math.Abs(cur.Y - _dragStartCanvas.Y);
 
-        var rect = new Rect(x, y, w, h);
-        // Clip to video rect
+        // Clip to video rect (so box doesn't extend into letterbox bars)
         var videoRect = GetVideoRectInCanvas();
         if (!videoRect.IsEmpty)
         {
-            if (rect.X < videoRect.X) { rect = new Rect(videoRect.X, rect.Y, Math.Max(0, rect.Width - (videoRect.X - rect.X)), rect.Height); }
-            if (rect.Y < videoRect.Y) { rect = new Rect(rect.X, videoRect.Y, rect.Width, Math.Max(0, rect.Height - (videoRect.Y - rect.Y))); }
-            if (rect.Right > videoRect.Right) rect = new Rect(rect.X, rect.Y, Math.Max(0, videoRect.Right - rect.X), rect.Height);
-            if (rect.Bottom > videoRect.Bottom) rect = new Rect(rect.X, rect.Y, rect.Width, Math.Max(0, videoRect.Bottom - rect.Y));
+            if (x < videoRect.X) { w -= videoRect.X - x; x = videoRect.X; }
+            if (y < videoRect.Y) { h -= videoRect.Y - y; y = videoRect.Y; }
+            if (x + w > videoRect.Right) w = Math.Max(0, videoRect.Right - x);
+            if (y + h > videoRect.Bottom) h = Math.Max(0, videoRect.Bottom - y);
         }
+        if (w < 0) w = 0;
+        if (h < 0) h = 0;
 
-        Canvas.SetLeft(SelectedRect, rect.X);
-        Canvas.SetTop(SelectedRect, rect.Y);
-        SelectedRect.Width = rect.Width;
-        SelectedRect.Height = rect.Height;
+        Canvas.SetLeft(SelectedRect, x);
+        Canvas.SetTop(SelectedRect, y);
+        SelectedRect.Width = w;
+        SelectedRect.Height = h;
     }
 
     private void Overlay_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         if (!_isDragging) return;
         _isDragging = false;
-        OverlayCanvas.ReleaseMouseCapture();
+        FrameHost.ReleaseMouseCapture();
 
         var cur = e.GetPosition(FrameHost);
-        var rect = new Rect(
+        var canvasRect = new Rect(
             Math.Min(_dragStartCanvas.X, cur.X),
             Math.Min(_dragStartCanvas.Y, cur.Y),
             Math.Abs(cur.X - _dragStartCanvas.X),
             Math.Abs(cur.Y - _dragStartCanvas.Y));
 
-        var norm = CanvasToNormalized(rect);
-        // Reject tiny drags (< 1% in either dim)
-        if (norm.Width < 0.01 || norm.Height < 0.01)
+        var norm = CanvasToNormalized(canvasRect);
+        // Reject tiny drags (< 2% in either dim)
+        if (norm.Width < 0.02 || norm.Height < 0.02)
         {
+            // Restore previous selected region (or hide)
             RepositionOverlays();
             return;
         }
@@ -370,22 +398,25 @@ public partial class RegionSelectorView : UserControl
 
     #region Seek Slider
 
-    private void SeekSlider_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    private void SeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        CurrentTime = SeekSlider.Value;
+        // Sync CurrentTime (TwoWay binding) and update display
+        if (Math.Abs(CurrentTime - e.NewValue) > 0.001)
+        {
+            CurrentTime = e.NewValue;
+        }
         UpdateTimeText();
-        RaiseEvent(new RoutedEventArgs(TimeChangedEvent, CurrentTime));
+
+        // Debounce TimeChanged so we don't spam frame extraction during drag
+        _seekDebounce?.Stop();
+        _seekDebounce?.Start();
     }
 
-    private void SeekSlider_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void SeekSlider_DragCompleted(object sender, DragCompletedEventArgs e)
     {
-        // Handles click-without-drag: slider Thumb.DragCompleted only fires on actual drag
-        if (Mouse.Captured == null)
-        {
-            CurrentTime = SeekSlider.Value;
-            UpdateTimeText();
-            RaiseEvent(new RoutedEventArgs(TimeChangedEvent, CurrentTime));
-        }
+        // Fire immediately on release to ensure final frame loads
+        _seekDebounce?.Stop();
+        RaiseEvent(new RoutedEventArgs(TimeChangedEvent, CurrentTime));
     }
 
     private void RandomBtn_Click(object sender, RoutedEventArgs e)
